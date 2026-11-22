@@ -1,0 +1,315 @@
+name: Build OpenWrt ZTE E8820S (BREED)
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Pilih Tag / Branch OpenWrt Resmi'
+        required: true
+        default: 'v25.12.6'
+        type: choice
+        options:
+          - v25.12.6
+          - openwrt-25.12
+          - openwrt-24.10
+          - main
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout Repo ZTE-E8820S
+        uses: actions/checkout@v4
+
+      - name: Bersihkan Ruang Disk Runner
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force || true
+          df -h
+
+      - name: Install Dependensi Kompilasi
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential \
+            bzip2 ccache clang cmake cpio curl device-tree-compiler ecj fastjar flex gawk gettext gcc-multilib \
+            g++-multilib git gnutls-dev gperf haveged help2man intltool lib32gcc-s1 libc6-dev-i386 libelf-dev \
+            libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses-dev libpython3-dev \
+            libreadline-dev libssl-dev libtool libyaml-dev libz-dev lld llvm lrzsz mkisofs msmtp nano \
+            ninja-build p7zip p7zip-full patch pkgconf python3 python3-pip python3-ply python3-docutils \
+            python3-pyelftools qemu-utils re2c rsync scons squashfs-tools subversion swig texinfo uglifyjs \
+            upx-ucl unzip vim wget xmlto xxd zlib1g-dev zstd
+
+      - name: Clone Source OpenWrt Resmi
+        run: |
+          git clone --depth=1 -b ${{ github.event.inputs.branch || 'v25.12.6' }} https://github.com/openwrt/openwrt.git openwrt
+
+      - name: Cache Source & Ccache
+        uses: actions/cache@v4
+        with:
+          path: |
+            openwrt/dl
+            openwrt/.ccache
+          key: openwrt-${{ github.event.inputs.branch || 'v25.12.6' }}-${{ hashFiles('.github/workflows/build-openwrt.yml') }}
+          restore-keys: |
+            openwrt-${{ github.event.inputs.branch || 'v25.12.6' }}-
+
+      - name: Update & Install Feeds
+        working-directory: openwrt
+        run: |
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Terapkan Patch BREED, MWAN3, WiFi & Auto FreeRAM
+        working-directory: openwrt
+        run: |
+          # 1. Timpa DTS dengan peta partisi BREED dari folder patch/
+          cp -f ../patch/mt7621_zte_e8820s.dts target/linux/ramips/dts/mt7621_zte_e8820s.dts
+
+          # 2. Ganti definisi zte_e8820s bawaan dengan versi BREED (patch/zte.txt)
+          python3 - <<'PY'
+          import re
+          mk_path = "target/linux/ramips/image/mt7621.mk"
+          with open(mk_path, "r", encoding="utf-8") as f:
+              content = f.read()
+          content = re.sub(r"\ndefine Device/zte_e8820s\b.*?TARGET_DEVICES \+= zte_e8820s\s*", "\n", content, flags=re.DOTALL)
+          with open("../patch/zte.txt", "r", encoding="utf-8") as f:
+              zte_patch = f.read()
+          with open(mk_path, "w", encoding="utf-8") as f:
+              f.write(content.rstrip() + "\n\n" + zte_patch.strip() + "\n")
+          PY
+
+          # 3. Terapkan patch LED & Sysupgrade secara aman
+          LEDS_FILE="target/linux/ramips/mt7621/base-files/etc/board.d/01_leds"
+          UPGRADE_FILE="target/linux/ramips/mt7621/base-files/lib/upgrade/platform.sh"
+
+          if ! grep -q "zte,e8820s" "$LEDS_FILE" && [ -f ../patch/leds.txt ]; then
+            sed -i '/esac/e cat ../patch/leds.txt' "$LEDS_FILE"
+          fi
+
+          if ! grep -q "zte,e8820s" "$UPGRADE_FILE" && [ -f ../patch/upgrade.txt ]; then
+            sed -i '/case "$board" in/r ../patch/upgrade.txt' "$UPGRADE_FILE"
+          fi
+
+          # 4. Tanamkan skrip /usr/bin/freeram.sh langsung ke dalam firmware
+          mkdir -p package/base-files/files/usr/bin
+          cat <<'EOF' > package/base-files/files/usr/bin/freeram.sh
+          #!/bin/sh
+          # Script Pembersih RAM & Log - JOS!
+
+          # Pastikan data tersimpan ke disk sebelum hapus cache
+          sync
+
+          # Bersihkan Cache RAM (PageCache, dentries, dan inodes)
+          echo 3 > /proc/sys/vm/drop_caches
+
+          # Bersihkan log sistem di RAM (/tmp/log) agar tidak menumpuk
+          rm -rf /tmp/log/*
+
+          # Notif ke log sistem
+          logger "RAM and Logs have been cleared by Maintenance Script (3 AM)"
+          EOF
+          chmod +x package/base-files/files/usr/bin/freeram.sh
+
+          # 5. Tanamkan skrip uci-defaults permanen (LAN, MWAN3, WiFi, & Crontab FreeRAM)
+          mkdir -p package/base-files/files/etc/uci-defaults
+          cat <<'OUTER_EOF' > package/base-files/files/etc/uci-defaults/999-custom-settings
+          #!/bin/sh
+
+          # --- 1. SETUP LAN & LEPASKAN LAN1-LAN4 DARI BR-LAN ---
+          uci set network.lan=interface
+          uci set network.lan.proto='static'
+          uci set network.lan.ipaddr='192.168.11.1'
+          uci set network.lan.netmask='255.255.255.0'
+
+          for i in 1 2 3 4; do
+              uci del_list network.@device[0].ports="lan$i" 2>/dev/null
+          done
+          uci set network.@device[0].bridge_empty='1'
+
+          # --- 2. NETWORK INTERFACES (WAN1-WAN4, USB, WWAN) ---
+          for i in 1 2 3 4; do
+              uci set network.wan$i=interface
+              uci set network.wan$i.device="lan$i"
+              uci set network.wan$i.proto='dhcp'
+              uci set network.wan$i.metric="$((i*10))"
+              uci set network.wan$i.peerdns='0'
+              uci add_list network.wan$i.dns='1.1.1.1'
+              uci add_list network.wan$i.dns='8.8.8.8'
+          done
+
+          uci set network.wanusb=interface
+          uci set network.wanusb.device='usb0'
+          uci set network.wanusb.proto='dhcp'
+          uci set network.wanusb.metric='80'
+
+          uci set network.wwan=interface
+          uci set network.wwan.proto='dhcp'
+          uci set network.wwan.metric='60'
+
+          uci set network.wwan2=interface
+          uci set network.wwan2.proto='dhcp'
+          uci set network.wwan2.metric='70'
+
+          uci delete network.wan 2>/dev/null
+          uci delete network.wan6 2>/dev/null
+          uci commit network
+
+          # --- 3. FIREWALL ZONES (WAN ZONE) ---
+          uci delete firewall.@zone[1].network 2>/dev/null
+          for iface in wan wan1 wan2 wan3 wan4 wanusb wwan wwan2; do
+              uci add_list firewall.@zone[1].network="$iface"
+          done
+          uci commit firewall
+
+          # --- 4. MWAN3 CONFIGURATION (LOAD BALANCE) ---
+          cat <<EOF > /etc/config/mwan3
+          config globals 'globals'
+          	option mmx_mask '0x3F00'
+
+          $(for iface in wan1 wan2 wan3 wan4 wwan wwan2 wanusb; do
+          echo "config interface '$iface'
+          	option enabled '1'
+          	list track_ip '8.8.8.8'
+          	list track_ip '1.1.1.1'
+          	list track_ip '9.9.9.9'
+          	list track_ip '1.0.0.1'
+          	option track_method 'ping'
+          	option reliability '2'
+          	option count '2'
+          	option timeout '2'
+          	option interval '5'
+          	option down '3'
+          	option up '5'
+          	option check_operstate '1'"
+          done)
+
+          $(for name in wan1 wan2 wan3 wan4 wwan wwan2 wanusb; do
+          echo "config member '${name}_m1_w1'
+          	option interface '$name'
+          	option metric '1'
+          	option weight '1'"
+          done)
+
+          config policy 'balanced'
+          $(for m in wan1 wan2 wan3 wan4 wwan wwan2 wanusb; do echo "	list use_member '${m}_m1_w1'"; done)
+          	option last_resort 'unreachable'
+
+          config rule 'https_sticky'
+          	option dest_port '443'
+          	option proto 'tcp'
+          	option sticky '1'
+          	option timeout '600'
+          	option use_policy 'balanced'
+
+          config rule 'default_rule_v4'
+          	option dest_ip '0.0.0.0/0'
+          	option use_policy 'balanced'
+          EOF
+          uci commit mwan3
+
+          # --- 5. WIFI 2.4G & 5G ON TANPA PASSWORD ---
+          for r in 0 1; do
+              uci set wireless.radio${r}.disabled='0'
+              uci set wireless.radio${r}.country='ID'
+              uci set wireless.default_radio${r}=wifi-iface
+              uci set wireless.default_radio${r}.device="radio${r}"
+              uci set wireless.default_radio${r}.network='lan'
+              uci set wireless.default_radio${r}.mode='ap'
+              uci set wireless.default_radio${r}.ssid='OpenWrt'
+              uci set wireless.default_radio${r}.encryption='none'
+              uci set wireless.default_radio${r}.disabled='0'
+          done
+          uci commit wireless
+
+          # --- 6. AUTO FREERAM CRONTAB (SETIAP JAM 03:00 PAGI) ---
+          mkdir -p /etc/crontabs
+          touch /etc/crontabs/root
+          sed -i '/freeram.sh/d' /etc/crontabs/root
+          echo "0 3 * * * /usr/bin/freeram.sh" >> /etc/crontabs/root
+          /etc/init.d/cron enable
+          /etc/init.d/cron restart
+
+          exit 0
+          OUTER_EOF
+          chmod +x package/base-files/files/etc/uci-defaults/999-custom-settings
+
+      - name: Konfigurasi Target & Paket (.config)
+        working-directory: openwrt
+        run: |
+          cat <<'EOF' > .config
+          CONFIG_TARGET_ramips=y
+          CONFIG_TARGET_ramips_mt7621=y
+          CONFIG_TARGET_ramips_mt7621_DEVICE_zte_e8820s=y
+          CONFIG_CCACHE=y
+
+          # --- LuCI, Tema & SSL (Varian OpenSSL agar tidak bentrok apk) ---
+          CONFIG_PACKAGE_luci=y
+          CONFIG_PACKAGE_luci-ssl-openssl=y
+          CONFIG_PACKAGE_luci-theme-material=y
+          CONFIG_PACKAGE_luci-app-filemanager=y
+          CONFIG_PACKAGE_luci-app-ttyd=y
+          # CONFIG_PACKAGE_luci-ssl is not set
+          # CONFIG_PACKAGE_libustream-mbedtls is not set
+          # CONFIG_PACKAGE_px5g-mbedtls is not set
+
+          # --- MWAN3 Load Balancing ---
+          CONFIG_PACKAGE_mwan3=y
+          CONFIG_PACKAGE_luci-app-mwan3=y
+
+          # --- USB 3.0, USB Tethering, & Modem 3G/4G/5G ---
+          CONFIG_PACKAGE_kmod-usb3=y
+          CONFIG_PACKAGE_usbutils=y
+          CONFIG_PACKAGE_usb-modeswitch=y
+          CONFIG_PACKAGE_luci-proto-3g=y
+          CONFIG_PACKAGE_luci-proto-modemmanager=y
+          CONFIG_PACKAGE_modemmanager=y
+          CONFIG_PACKAGE_kmod-usb-net-rtl8152=y
+          CONFIG_PACKAGE_kmod-usb-net-asix=y
+          CONFIG_PACKAGE_kmod-usb-net-rndis=y
+          CONFIG_PACKAGE_kmod-usb-net-cdc-ether=y
+          CONFIG_PACKAGE_kmod-usb-net-cdc-ncm=y
+          CONFIG_PACKAGE_kmod-usb-net-cdc-mbim=y
+          CONFIG_PACKAGE_kmod-usb-net-huawei-cdc-ncm=y
+          CONFIG_PACKAGE_kmod-usb-serial=y
+          CONFIG_PACKAGE_kmod-usb-serial-wwan=y
+          CONFIG_PACKAGE_kmod-usb-serial-option=y
+          EOF
+
+          make defconfig
+
+      - name: Download Source Paket
+        working-directory: openwrt
+        run: |
+          make download -j$(nproc)
+          find dl -size -1024c -exec ls -l {} \;
+          find dl -size -1024c -exec rm -f {} \;
+
+      - name: Compile Firmware OpenWrt
+        working-directory: openwrt
+        run: |
+          make -j$(nproc) || make -j1 V=s
+
+      - name: Siapkan File Output
+        run: |
+          mkdir -p output
+          cp -f openwrt/bin/targets/ramips/mt7621/*zte_e8820s* output/
+          cp -f openwrt/.config output/config.buildinfo
+          ls -lh output/
+
+      - name: Upload ke GitHub Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: openwrt-e8820s-${{ github.run_number }}
+          name: OpenWrt ${{ github.event.inputs.branch || 'v25.12.6' }} ZTE E8820S MWAN3 (Build #${{ github.run_number }})
+          body: |
+            Custom build **OpenWrt ${{ github.event.inputs.branch || 'v25.12.6' }}** untuk **ZTE E8820S (BREED Layout HC5962)** dengan konfigurasi permanen:
+            - **LAN IP:** `192.168.11.1`
+            - **WiFi 2.4G & 5G:** Aktif (`OpenWrt`, tanpa password)
+            - **MWAN3:** Load Balance (`wan1`–`wan4`, `wanusb`, `wwan`, `wwan2`)
+            - **Maintenance:** Auto FreeRAM (`/usr/bin/freeram.sh`) terjadwal setiap pukul `03:00`
+            - **Upgrade dari LuCI:** Gunakan `*-squashfs-sysupgrade.bin` (matikan centang *Keep settings*).
+          files: output/*
