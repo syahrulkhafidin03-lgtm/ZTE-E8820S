@@ -4,11 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       branch:
-        description: 'Pilih Branch ImmortalWrt'
+        description: 'Pilih Tag / Branch ImmortalWrt'
         required: true
-        default: 'openwrt-25.12'
+        default: 'v25.12.2'
         type: choice
         options:
+          - v25.12.2
           - openwrt-25.12
           - openwrt-24.10
           - master
@@ -44,17 +45,17 @@ jobs:
 
       - name: Clone Source ImmortalWrt
         run: |
-          git clone --depth=1 -b ${{ github.event.inputs.branch || 'openwrt-25.12' }} https://github.com/immortalwrt/immortalwrt.git immortalwrt
+          git clone --depth=1 -b ${{ github.event.inputs.branch || 'v25.12.2' }} https://github.com/immortalwrt/immortalwrt.git immortalwrt
 
-      - name: Cache Source & Ccache (Percepat Build Berikutnya)
+      - name: Cache Source & Ccache
         uses: actions/cache@v4
         with:
           path: |
             immortalwrt/dl
             immortalwrt/.ccache
-          key: immortalwrt-${{ github.event.inputs.branch || 'openwrt-25.12' }}-${{ hashFiles('.github/workflows/build.yml') }}
+          key: immortalwrt-${{ github.event.inputs.branch || 'v25.12.2' }}-${{ hashFiles('.github/workflows/build.yml') }}
           restore-keys: |
-            immortalwrt-${{ github.event.inputs.branch || 'openwrt-25.12' }}-
+            immortalwrt-${{ github.event.inputs.branch || 'v25.12.2' }}-
 
       - name: Update & Install Feeds
         working-directory: immortalwrt
@@ -62,13 +63,13 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      - name: Terapkan Patch BREED dari Repo
+      - name: Terapkan Patch BREED & Konfigurasi Permanen MWAN3 + WiFi
         working-directory: immortalwrt
         run: |
-          # 1. Timpa DTS dengan versi BREED dari folder patch/ Anda
+          # 1. Timpa DTS dengan peta partisi BREED dari folder patch/
           cp -f ../patch/mt7621_zte_e8820s.dts target/linux/ramips/dts/mt7621_zte_e8820s.dts
 
-          # 2. Hapus definisi zte_e8820s bawaan ImmortalWrt (U-Boot mod), lalu masukkan patch/zte.txt
+          # 2. Ganti definisi zte_e8820s bawaan dengan versi BREED (patch/zte.txt)
           python3 - <<'PY'
           import re
           mk_path = "target/linux/ramips/image/mt7621.mk"
@@ -81,7 +82,7 @@ jobs:
               f.write(content.rstrip() + "\n\n" + zte_patch.strip() + "\n")
           PY
 
-          # 3. Terapkan patch LED & Sysupgrade secara aman (hindari duplikat)
+          # 3. Terapkan patch LED & Sysupgrade secara aman
           LEDS_FILE="target/linux/ramips/mt7621/base-files/etc/board.d/01_leds"
           UPGRADE_FILE="target/linux/ramips/mt7621/base-files/lib/upgrade/platform.sh"
 
@@ -93,11 +94,120 @@ jobs:
             sed -i '/case "$board" in/r ../patch/upgrade.txt' "$UPGRADE_FILE"
           fi
 
-          # 4. Masukkan 99-default-settings sebagai 999-custom-settings agar tidak bentrok dengan paket default-settings ImmortalWrt
-          if [ -f ../patch/99-default-settings ]; then
-            mkdir -p package/base-files/files/etc/uci-defaults
-            cp -f ../patch/99-default-settings package/base-files/files/etc/uci-defaults/999-custom-settings
-          fi
+          # 4. Tanamkan skrip uci-defaults permanen (LAN 192.168.11.1, MWAN3, & WiFi 2.4G/5G)
+          mkdir -p package/base-files/files/etc/uci-defaults
+          cat <<'OUTER_EOF' > package/base-files/files/etc/uci-defaults/999-custom-settings
+          #!/bin/sh
+
+          # --- 1. SETUP LAN & LEPASKAN LAN1-LAN4 DARI BR-LAN ---
+          uci set network.lan=interface
+          uci set network.lan.proto='static'
+          uci set network.lan.ipaddr='192.168.11.1'
+          uci set network.lan.netmask='255.255.255.0'
+
+          for i in 1 2 3 4; do
+              uci del_list network.@device[0].ports="lan$i" 2>/dev/null
+          done
+          uci set network.@device[0].bridge_empty='1'
+
+          # --- 2. NETWORK INTERFACES (WAN1-WAN4, USB, WWAN) ---
+          for i in 1 2 3 4; do
+              uci set network.wan$i=interface
+              uci set network.wan$i.device="lan$i"
+              uci set network.wan$i.proto='dhcp'
+              uci set network.wan$i.metric="$((i*10))"
+              uci set network.wan$i.peerdns='0'
+              uci add_list network.wan$i.dns='1.1.1.1'
+              uci add_list network.wan$i.dns='8.8.8.8'
+          done
+
+          uci set network.wanusb=interface
+          uci set network.wanusb.device='usb0'
+          uci set network.wanusb.proto='dhcp'
+          uci set network.wanusb.metric='80'
+
+          uci set network.wwan=interface
+          uci set network.wwan.proto='dhcp'
+          uci set network.wwan.metric='60'
+
+          uci set network.wwan2=interface
+          uci set network.wwan2.proto='dhcp'
+          uci set network.wwan2.metric='70'
+
+          uci delete network.wan 2>/dev/null
+          uci delete network.wan6 2>/dev/null
+          uci commit network
+
+          # --- 3. FIREWALL ZONES (WAN ZONE) ---
+          uci delete firewall.@zone[1].network 2>/dev/null
+          for iface in wan wan1 wan2 wan3 wan4 wanusb wwan wwan2; do
+              uci add_list firewall.@zone[1].network="$iface"
+          done
+          uci commit firewall
+
+          # --- 4. MWAN3 CONFIGURATION (LOAD BALANCE) ---
+          cat <<EOF > /etc/config/mwan3
+          config globals 'globals'
+          	option mmx_mask '0x3F00'
+
+          $(for iface in wan1 wan2 wan3 wan4 wwan wwan2 wanusb; do
+          echo "config interface '$iface'
+          	option enabled '1'
+          	list track_ip '8.8.8.8'
+          	list track_ip '1.1.1.1'
+          	list track_ip '9.9.9.9'
+          	list track_ip '1.0.0.1'
+          	option track_method 'ping'
+          	option reliability '2'
+          	option count '2'
+          	option timeout '2'
+          	option interval '5'
+          	option down '3'
+          	option up '5'
+          	option check_operstate '1'"
+          done)
+
+          $(for name in wan1 wan2 wan3 wan4 wwan wwan2 wanusb; do
+          echo "config member '${name}_m1_w1'
+          	option interface '$name'
+          	option metric '1'
+          	option weight '1'"
+          done)
+
+          config policy 'balanced'
+          $(for m in wan1 wan2 wan3 wan4 wwan wwan2 wanusb; do echo "	list use_member '${m}_m1_w1'"; done)
+          	option last_resort 'unreachable'
+
+          config rule 'https_sticky'
+          	option dest_port '443'
+          	option proto 'tcp'
+          	option sticky '1'
+          	option timeout '600'
+          	option use_policy 'balanced'
+
+          config rule 'default_rule_v4'
+          	option dest_ip '0.0.0.0/0'
+          	option use_policy 'balanced'
+          EOF
+          uci commit mwan3
+
+          # --- 5. WIFI 2.4G & 5G ON TANPA PASSWORD ---
+          for r in 0 1; do
+              uci set wireless.radio${r}.disabled='0'
+              uci set wireless.radio${r}.country='ID'
+              uci set wireless.default_radio${r}=wifi-iface
+              uci set wireless.default_radio${r}.device="radio${r}"
+              uci set wireless.default_radio${r}.network='lan'
+              uci set wireless.default_radio${r}.mode='ap'
+              uci set wireless.default_radio${r}.ssid='ImmortalWrt'
+              uci set wireless.default_radio${r}.encryption='none'
+              uci set wireless.default_radio${r}.disabled='0'
+          done
+          uci commit wireless
+
+          exit 0
+          OUTER_EOF
+          chmod +x package/base-files/files/etc/uci-defaults/999-custom-settings
 
       - name: Konfigurasi Target & Paket (.config)
         working-directory: immortalwrt
@@ -108,34 +218,37 @@ jobs:
           CONFIG_TARGET_ramips_mt7621_DEVICE_zte_e8820s=y
           CONFIG_CCACHE=y
 
-          # --- Interface LuCI & SSL (Varian OpenSSL agar tidak bentrok apk) ---
+          # --- LuCI, Tema & SSL (Varian OpenSSL agar tidak bentrok apk) ---
           CONFIG_PACKAGE_luci=y
           CONFIG_PACKAGE_luci-ssl-openssl=y
+          CONFIG_PACKAGE_luci-theme-material=y
+          CONFIG_PACKAGE_luci-app-filemanager=y
+          CONFIG_PACKAGE_luci-app-ttyd=y
           # CONFIG_PACKAGE_luci-ssl is not set
           # CONFIG_PACKAGE_libustream-mbedtls is not set
           # CONFIG_PACKAGE_px5g-mbedtls is not set
 
-          # --- Multi-WAN & Load Balancing ---
+          # --- MWAN3 Load Balancing ---
           CONFIG_PACKAGE_mwan3=y
           CONFIG_PACKAGE_luci-app-mwan3=y
 
-          # --- SQM QoS Anti-Lag & DNS-over-HTTPS ---
-          CONFIG_PACKAGE_sqm-scripts=y
-          CONFIG_PACKAGE_luci-app-sqm=y
-          CONFIG_PACKAGE_https-dns-proxy=y
-          CONFIG_PACKAGE_luci-app-https-dns-proxy=y
-
-          # --- Dukungan USB 3.0 & Storage ---
+          # --- USB 3.0, USB Tethering, & Modem 3G/4G/5G ---
           CONFIG_PACKAGE_kmod-usb3=y
-          CONFIG_PACKAGE_kmod-usb-storage=y
-          CONFIG_PACKAGE_kmod-fs-ext4=y
-          CONFIG_PACKAGE_block-mount=y
-
-          # --- Utilitas Script & Terminal ---
-          CONFIG_PACKAGE_curl=y
-          CONFIG_PACKAGE_ca-bundle=y
-          CONFIG_PACKAGE_bash=y
-          CONFIG_PACKAGE_htop=y
+          CONFIG_PACKAGE_usbutils=y
+          CONFIG_PACKAGE_usb-modeswitch=y
+          CONFIG_PACKAGE_luci-proto-3g=y
+          CONFIG_PACKAGE_luci-proto-modemmanager=y
+          CONFIG_PACKAGE_modemmanager=y
+          CONFIG_PACKAGE_kmod-usb-net-rtl8152=y
+          CONFIG_PACKAGE_kmod-usb-net-asix=y
+          CONFIG_PACKAGE_kmod-usb-net-rndis=y
+          CONFIG_PACKAGE_kmod-usb-net-cdc-ether=y
+          CONFIG_PACKAGE_kmod-usb-net-cdc-ncm=y
+          CONFIG_PACKAGE_kmod-usb-net-cdc-mbim=y
+          CONFIG_PACKAGE_kmod-usb-net-huawei-cdc-ncm=y
+          CONFIG_PACKAGE_kmod-usb-serial=y
+          CONFIG_PACKAGE_kmod-usb-serial-wwan=y
+          CONFIG_PACKAGE_kmod-usb-serial-option=y
           EOF
 
           make defconfig
@@ -163,9 +276,11 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: immortalwrt-e8820s-${{ github.run_number }}
-          name: ImmortalWrt ${{ github.event.inputs.branch || 'openwrt-25.12' }} ZTE E8820S (Build #${{ github.run_number }})
+          name: ImmortalWrt ${{ github.event.inputs.branch || 'v25.12.2' }} ZTE E8820S MWAN3 (Build #${{ github.run_number }})
           body: |
-            Custom build ImmortalWrt untuk **ZTE E8820S (BREED Layout HC5962)**.
+            Custom build **ImmortalWrt ${{ github.event.inputs.branch || 'v25.12.2' }}** untuk **ZTE E8820S (BREED Layout HC5962)** dengan konfigurasi permanen:
+            - **LAN IP:** `192.168.11.1`
+            - **WiFi 2.4G & 5G:** Aktif (`ImmortalWrt`, tanpa password)
+            - **MWAN3:** Load Balance (`wan1`–`wan4`, `wanusb`, `wwan`, `wwan2`)
             - **Upgrade dari LuCI:** Gunakan `*-squashfs-sysupgrade.bin` (matikan centang *Keep settings*).
-            - **Install lewat BREED Web:** Gunakan `*-squashfs-factory.bin` dengan layout **HC5962**.
           files: output/*
