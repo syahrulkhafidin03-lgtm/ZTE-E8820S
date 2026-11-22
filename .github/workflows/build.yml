@@ -1,18 +1,17 @@
-name: Build ImmortalWrt ZTE E8820S (BREED)
+name: Build OpenWrt ZTE E8820S (BREED)
 
 on:
   workflow_dispatch:
     inputs:
       branch:
-        description: 'Pilih Tag / Branch ImmortalWrt'
+        description: 'Pilih Branch / Tag OpenWrt'
         required: true
-        default: 'v25.12.2'
+        default: 'openwrt-25.12'
         type: choice
         options:
-          - v25.12.2
           - openwrt-25.12
           - openwrt-24.10
-          - master
+          - main
 
 permissions:
   contents: write
@@ -43,28 +42,28 @@ jobs:
             python3-pyelftools qemu-utils re2c rsync scons squashfs-tools subversion swig texinfo uglifyjs \
             upx-ucl unzip vim wget xmlto xxd zlib1g-dev zstd
 
-      - name: Clone Source ImmortalWrt
+      - name: Clone Source OpenWrt Resmi
         run: |
-          git clone --depth=1 -b ${{ github.event.inputs.branch || 'v25.12.2' }} https://github.com/immortalwrt/immortalwrt.git immortalwrt
+          git clone --depth=1 -b ${{ github.event.inputs.branch || 'openwrt-25.12' }} https://github.com/openwrt/openwrt.git openwrt
 
       - name: Cache Source & Ccache
         uses: actions/cache@v4
         with:
           path: |
-            immortalwrt/dl
-            immortalwrt/.ccache
-          key: immortalwrt-${{ github.event.inputs.branch || 'v25.12.2' }}-${{ hashFiles('.github/workflows/build.yml') }}
+            openwrt/dl
+            openwrt/.ccache
+          key: openwrt-${{ github.event.inputs.branch || 'openwrt-25.12' }}-${{ hashFiles('.github/workflows/build-openwrt.yml') }}
           restore-keys: |
-            immortalwrt-${{ github.event.inputs.branch || 'v25.12.2' }}-
+            openwrt-${{ github.event.inputs.branch || 'openwrt-25.12' }}-
 
       - name: Update & Install Feeds
-        working-directory: immortalwrt
+        working-directory: openwrt
         run: |
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      - name: Terapkan Patch BREED & Konfigurasi Permanen MWAN3 + WiFi
-        working-directory: immortalwrt
+      - name: Terapkan Patch BREED & Konfigurasi Permanen OpenWrt
+        working-directory: openwrt
         run: |
           # 1. Timpa DTS dengan peta partisi BREED dari folder patch/
           cp -f ../patch/mt7621_zte_e8820s.dts target/linux/ramips/dts/mt7621_zte_e8820s.dts
@@ -94,7 +93,7 @@ jobs:
             sed -i '/case "$board" in/r ../patch/upgrade.txt' "$UPGRADE_FILE"
           fi
 
-          # 4. Tanamkan skrip uci-defaults permanen (LAN 192.168.11.1, MWAN3, & WiFi 2.4G/5G)
+          # 4. Tanamkan skrip uci-defaults permanen (LAN, MWAN3, WiFi, & Auto FreeRAM)
           mkdir -p package/base-files/files/etc/uci-defaults
           cat <<'OUTER_EOF' > package/base-files/files/etc/uci-defaults/999-custom-settings
           #!/bin/sh
@@ -199,18 +198,45 @@ jobs:
               uci set wireless.default_radio${r}.device="radio${r}"
               uci set wireless.default_radio${r}.network='lan'
               uci set wireless.default_radio${r}.mode='ap'
-              uci set wireless.default_radio${r}.ssid='ImmortalWrt'
+              uci set wireless.default_radio${r}.ssid='OpenWrt'
               uci set wireless.default_radio${r}.encryption='none'
               uci set wireless.default_radio${r}.disabled='0'
           done
           uci commit wireless
+
+          # --- 6. AUTO FREERAM SCRIPT & CRONTAB JAM 03:00 ---
+          cat << 'EOF' > /usr/bin/freeram.sh
+          #!/bin/sh
+          # Script Pembersih RAM & Log - JOS!
+
+          # Pastikan data tersimpan ke disk sebelum hapus cache
+          sync
+
+          # Bersihkan Cache RAM (PageCache, dentries, dan inodes)
+          echo 3 > /proc/sys/vm/drop_caches
+
+          # Bersihkan log sistem di RAM (/tmp/log) agar tidak menumpuk
+          rm -rf /tmp/log/*
+
+          # Notif ke log sistem
+          logger "RAM and Logs have been cleared by Maintenance Script (3 AM)"
+          EOF
+
+          chmod +x /usr/bin/freeram.sh
+          mkdir -p /etc/crontabs
+          touch /etc/crontabs/root
+          sed -i '/freeram.sh/d' /etc/crontabs/root
+          echo "0 3 * * * /usr/bin/freeram.sh" >> /etc/crontabs/root
+          /etc/init.d/cron enable
+          /etc/init.d/cron restart
+          /usr/bin/freeram.sh
 
           exit 0
           OUTER_EOF
           chmod +x package/base-files/files/etc/uci-defaults/999-custom-settings
 
       - name: Konfigurasi Target & Paket (.config)
-        working-directory: immortalwrt
+        working-directory: openwrt
         run: |
           cat <<'EOF' > .config
           CONFIG_TARGET_ramips=y
@@ -254,33 +280,34 @@ jobs:
           make defconfig
 
       - name: Download Source Paket
-        working-directory: immortalwrt
+        working-directory: openwrt
         run: |
           make download -j$(nproc)
           find dl -size -1024c -exec ls -l {} \;
           find dl -size -1024c -exec rm -f {} \;
 
-      - name: Compile Firmware ImmortalWrt
-        working-directory: immortalwrt
+      - name: Compile Firmware OpenWrt
+        working-directory: openwrt
         run: |
           make -j$(nproc) || make -j1 V=s
 
       - name: Siapkan File Output
         run: |
           mkdir -p output
-          cp -f immortalwrt/bin/targets/ramips/mt7621/*zte_e8820s* output/
-          cp -f immortalwrt/.config output/config.buildinfo
+          cp -f openwrt/bin/targets/ramips/mt7621/*zte_e8820s* output/
+          cp -f openwrt/.config output/config.buildinfo
           ls -lh output/
 
       - name: Upload ke GitHub Releases
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: immortalwrt-e8820s-${{ github.run_number }}
-          name: ImmortalWrt ${{ github.event.inputs.branch || 'v25.12.2' }} ZTE E8820S MWAN3 (Build #${{ github.run_number }})
+          tag_name: openwrt-e8820s-${{ github.run_number }}
+          name: OpenWrt ${{ github.event.inputs.branch || 'openwrt-25.12' }} ZTE E8820S MWAN3 (Build #${{ github.run_number }})
           body: |
-            Custom build **ImmortalWrt ${{ github.event.inputs.branch || 'v25.12.2' }}** untuk **ZTE E8820S (BREED Layout HC5962)** dengan konfigurasi permanen:
+            Custom build **OpenWrt Resmi ${{ github.event.inputs.branch || 'openwrt-25.12' }}** untuk **ZTE E8820S (BREED Layout HC5962)** dengan konfigurasi permanen:
             - **LAN IP:** `192.168.11.1`
-            - **WiFi 2.4G & 5G:** Aktif (`ImmortalWrt`, tanpa password)
+            - **WiFi 2.4G & 5G:** Aktif (`OpenWrt`, tanpa password)
             - **MWAN3:** Load Balance (`wan1`–`wan4`, `wanusb`, `wwan`, `wwan2`)
+            - **Auto FreeRAM:** `/usr/bin/freeram.sh` aktif otomatis setiap pukul `03:00`
             - **Upgrade dari LuCI:** Gunakan `*-squashfs-sysupgrade.bin` (matikan centang *Keep settings*).
           files: output/*
