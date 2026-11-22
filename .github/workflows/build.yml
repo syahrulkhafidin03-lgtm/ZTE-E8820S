@@ -1,15 +1,15 @@
-name: Build OpenWrt ZTE E8820S (BREED)
+name: Build ImmortalWrt ZTE E8820S (BREED)
 
 on:
   workflow_dispatch:
     inputs:
       branch:
-        description: 'Versi OpenWrt'
+        description: 'Versi Rilis ImmortalWrt'
         required: true
-        default: 'v25.12.6'
+        default: 'v25.12.2'
         type: choice
         options:
-          - v25.12.6
+          - v25.12.2
 
 permissions:
   contents: write
@@ -40,28 +40,28 @@ jobs:
             python3-pyelftools qemu-utils re2c rsync scons squashfs-tools subversion swig texinfo uglifyjs \
             upx-ucl unzip vim wget xmlto xxd zlib1g-dev zstd
 
-      - name: Clone Source OpenWrt v25.12.6
+      - name: Clone Source ImmortalWrt v25.12.2
         run: |
-          git clone --depth=1 -b v25.12.6 https://github.com/openwrt/openwrt.git openwrt
+          git clone --depth=1 -b v25.12.2 https://github.com/immortalwrt/immortalwrt.git immortalwrt
 
       - name: Cache Source & Ccache
         uses: actions/cache@v4
         with:
           path: |
-            openwrt/dl
-            openwrt/.ccache
-          key: openwrt-v25.12.6-official-${{ hashFiles('.github/workflows/build.yml') }}
+            immortalwrt/dl
+            immortalwrt/.ccache
+          key: immortalwrt-v25.12.2-official-${{ hashFiles('.github/workflows/build.yml') }}
           restore-keys: |
-            openwrt-v25.12.6-official-
+            immortalwrt-v25.12.2-official-
 
       - name: Update & Install Feeds
-        working-directory: openwrt
+        working-directory: immortalwrt
         run: |
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      - name: Terapkan Patch BREED, Tuning Performa, FreeRAM & MWAN3
-        working-directory: openwrt
+      - name: Terapkan Patch BREED, Max Performance Tuning, FreeRAM & MWAN3
+        working-directory: immortalwrt
         run: |
           # 1. Timpa DTS dengan peta partisi BREED dari folder patch/
           cp -f ../patch/mt7621_zte_e8820s.dts target/linux/ramips/dts/mt7621_zte_e8820s.dts
@@ -91,23 +91,24 @@ jobs:
             sed -i '/case "$board" in/r ../patch/upgrade.txt' "$UPGRADE_FILE"
           fi
 
-          # 4. Tanamkan Kernel Sysctl Tuning (TCP BBR, fq_codel, Anti-Bufferbloat & RAM Guard)
+          # 4. Tanamkan Kernel Sysctl Tuning (BBR, fq_codel, Zero-Spike Latency & RAM Guard)
           mkdir -p package/base-files/files/etc/sysctl.d
           cat <<'SYSCTL_EOF' > package/base-files/files/etc/sysctl.d/99-performance.conf
-          # --- TCP BBR & Fair Queue CoDel (Anti-Lag & High Throughput) ---
+          # --- TCP BBR & Fair Queue CoDel (Ultra-Low Latency & Anti-Spike) ---
           net.core.default_qdisc=fq_codel
           net.ipv4.tcp_congestion_control=bbr
           net.ipv4.tcp_fastopen=3
           net.ipv4.tcp_mtu_probing=1
           net.ipv4.tcp_slow_start_after_idle=0
           net.ipv4.tcp_no_metrics_save=1
+          net.ipv4.tcp_notsent_lowat=16384
           net.ipv4.tcp_tw_reuse=1
           net.ipv4.tcp_fin_timeout=15
           net.ipv4.tcp_keepalive_time=120
           net.ipv4.tcp_keepalive_intvl=15
           net.ipv4.tcp_keepalive_probes=4
 
-          # --- Buffer Jaringan Optimal untuk MT7621 (256MB RAM) ---
+          # --- Buffer Jaringan Optimal untuk MT7621A (256MB RAM) ---
           net.core.netdev_max_backlog=4096
           net.core.somaxconn=2048
           net.core.rmem_default=262144
@@ -119,7 +120,7 @@ jobs:
           net.ipv4.udp_rmem_min=8192
           net.ipv4.udp_wmem_min=8192
 
-          # --- Conntrack Multi-WAN & Perlindungan RAM ---
+          # --- Conntrack Multi-WAN & Perlindungan Stutter RAM ---
           net.netfilter.nf_conntrack_max=32768
           net.netfilter.nf_conntrack_tcp_timeout_established=1800
           net.netfilter.nf_conntrack_tcp_timeout_time_wait=30
@@ -140,7 +141,7 @@ jobs:
           FREERAM_EOF
           chmod +x package/base-files/files/usr/bin/freeram.sh
 
-          # 6. Tanamkan skrip uci-defaults permanen (Multi-Core, WiFi Pro, LAN, MWAN3, DNS & Crontab)
+          # 6. Tanamkan skrip uci-defaults permanen (Fullcone NAT, Multi-Core, WiFi Pro, MWAN3 & Cron)
           mkdir -p package/base-files/files/etc/uci-defaults
           cat <<'OUTER_EOF' > package/base-files/files/etc/uci-defaults/999-custom-settings
           #!/bin/sh
@@ -153,10 +154,6 @@ jobs:
               uci set irqbalance.irqbalance.enabled='1'
               uci commit irqbalance
           fi
-
-          # Matikan HW Flow Offloading agar fwmark MWAN3 tetap bekerja 100% akurat
-          uci set firewall.@defaults[0].flow_offloading='0'
-          uci set firewall.@defaults[0].flow_offloading_hw='0'
 
           # --- 2. SETUP LAN & LEPASKAN LAN1-LAN4 DARI BR-LAN ---
           uci set network.lan=interface
@@ -197,7 +194,13 @@ jobs:
           uci delete network.wan6 2>/dev/null
           uci commit network
 
-          # --- 4. FIREWALL ZONES (WAN ZONE) ---
+          # --- 4. FIREWALL ZONES & IMMORTALWRT NATIVE FULLCONE NAT ---
+          # Aktifkan Fullcone NAT bawaan ImmortalWrt untuk ping stabil & gaming
+          uci set firewall.@defaults[0].fullcone='1'
+          # Matikan Flow Offloading agar penandaan paket MWAN3 tetap akurat 100%
+          uci set firewall.@defaults[0].flow_offloading='0'
+          uci set firewall.@defaults[0].flow_offloading_hw='0'
+
           uci delete firewall.@zone[1].network 2>/dev/null
           for iface in wan wan1 wan2 wan3 wan4 wanusb wwan wwan2; do
               uci add_list firewall.@zone[1].network="$iface"
@@ -250,7 +253,7 @@ jobs:
           EOF
           uci commit mwan3
 
-          # --- 6. WIFI 2.4G & 5G TUNING (VHT80, LOW-LATENCY & ROAMING 802.11k/v) ---
+          # --- 6. WIFI 2.4G & 5G PRO TUNING (VHT80, NON-LEGACY, 802.11k/v ROAMING) ---
           for r in 0 1; do
               BAND=$(uci -q get wireless.radio${r}.band)
               uci set wireless.radio${r}.disabled='0'
@@ -269,7 +272,7 @@ jobs:
               uci set wireless.default_radio${r}.device="radio${r}"
               uci set wireless.default_radio${r}.network='lan'
               uci set wireless.default_radio${r}.mode='ap'
-              uci set wireless.default_radio${r}.ssid='OpenWrt'
+              uci set wireless.default_radio${r}.ssid='ImmortalWrt'
               uci set wireless.default_radio${r}.encryption='none'
               uci set wireless.default_radio${r}.disabled='0'
               uci set wireless.default_radio${r}.disassoc_low_ack='1'
@@ -296,12 +299,12 @@ jobs:
           OUTER_EOF
           chmod +x package/base-files/files/etc/uci-defaults/999-custom-settings
 
-      - name: Gunakan config.buildinfo Resmi OpenWrt 25.12.6 + Paket Tambahan
-        working-directory: openwrt
+      - name: Gunakan config.buildinfo Resmi ImmortalWrt 25.12.2 + Paket Tambahan
+        working-directory: immortalwrt
         run: |
-          wget -O .config https://downloads.openwrt.org/releases/25.12.6/targets/ramips/mt7621/config.buildinfo
+          curl -fsSL https://downloads.immortalwrt.org/releases/25.12.2/targets/ramips/mt7621/config.buildinfo -o .config
 
-          # Kunci build hanya untuk ZTE E8820S agar tidak merakit 200+ router lain & SDK
+          # Kunci build hanya untuk ZTE E8820S agar tidak merakit ratusan router lain & SDK
           sed -i '/CONFIG_TARGET_DEVICE_/d' .config
           sed -i '/CONFIG_TARGET_MULTI_PROFILE/d' .config
           sed -i '/CONFIG_TARGET_ALL_PROFILES/d' .config
@@ -320,16 +323,20 @@ jobs:
           # CONFIG_SDK is not set
           CONFIG_CCACHE=y
 
-          # --- LuCI, Tema & Utilitas ---
+          # --- LuCI, Tema & SSL (Varian OpenSSL agar tidak bentrok apk) ---
           CONFIG_PACKAGE_luci=y
-          CONFIG_PACKAGE_luci-ssl=y
+          CONFIG_PACKAGE_luci-ssl-openssl=y
           CONFIG_PACKAGE_luci-theme-material=y
           CONFIG_PACKAGE_luci-app-filemanager=y
           CONFIG_PACKAGE_luci-app-ttyd=y
+          # CONFIG_PACKAGE_luci-ssl is not set
+          # CONFIG_PACKAGE_libustream-mbedtls is not set
+          # CONFIG_PACKAGE_px5g-mbedtls is not set
 
-          # --- Multi-Core & TCP BBR Performance ---
+          # --- Multi-Core, TCP BBR & Fullcone NAT Performance ---
           CONFIG_PACKAGE_irqbalance=y
           CONFIG_PACKAGE_kmod-tcp-bbr=y
+          CONFIG_PACKAGE_kmod-nft-fullcone=y
 
           # --- MWAN3 Load Balancing ---
           CONFIG_PACKAGE_mwan3=y
@@ -357,33 +364,33 @@ jobs:
           make defconfig
 
       - name: Download Source Paket
-        working-directory: openwrt
+        working-directory: immortalwrt
         run: |
           make download -j$(nproc)
           find dl -size -1024c -exec ls -l {} \;
           find dl -size -1024c -exec rm -f {} \;
 
-      - name: Compile Firmware OpenWrt 25.12.6
-        working-directory: openwrt
+      - name: Compile Firmware ImmortalWrt 25.12.2
+        working-directory: immortalwrt
         run: |
           make -j$(nproc) || make -j1 V=s
 
       - name: Siapkan File Output
         run: |
           mkdir -p output
-          cp -f openwrt/bin/targets/ramips/mt7621/*zte_e8820s* output/
-          cp -f openwrt/.config output/config.buildinfo
+          cp -f immortalwrt/bin/targets/ramips/mt7621/*zte_e8820s* output/
+          cp -f immortalwrt/.config output/config.buildinfo
           ls -lh output/
 
       - name: Upload ke GitHub Releases
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: openwrt-25.12.6-e8820s-${{ github.run_number }}
-          name: OpenWrt 25.12.6 ZTE E8820S Max Performance + MWAN3 (Build #${{ github.run_number }})
+          tag_name: immortalwrt-25.12.2-e8820s-${{ github.run_number }}
+          name: ImmortalWrt 25.12.2 ZTE E8820S Max Performance + MWAN3 (Build #${{ github.run_number }})
           body: |
-            Custom build **OpenWrt v25.12.6** (kompatibel 100% dengan seluruh paket & `kmods` online OpenWrt) untuk **ZTE E8820S (BREED Layout HC5962)**:
-            - **Max Performance:** TCP BBR + `fq_codel`, `irqbalance` + `packet_steering` 4-thread CPU, DNS cache 4096, & WiFi 5G `VHT80` + 802.11k/v roaming.
-            - **LAN IP:** `192.168.11.1` | **WiFi 2.4G & 5G:** Aktif (`OpenWrt`, tanpa password)
+            Custom build **ImmortalWrt v25.12.2** (kompatibel 100% dengan seluruh paket & `kmods` online ImmortalWrt) untuk **ZTE E8820S (BREED Layout HC5962)**:
+            - **Max Performance:** Native Fullcone NAT, TCP BBR + `fq_codel` + `tcp_notsent_lowat`, `irqbalance` + `packet_steering` 4-thread CPU, DNS cache 4096, & WiFi 5G `VHT80` + 802.11k/v roaming.
+            - **LAN IP:** `192.168.11.1` | **WiFi 2.4G & 5G:** Aktif (`ImmortalWrt`, tanpa password)
             - **MWAN3:** Load Balance (`wan1`–`wan4`, `wanusb`, `wwan`, `wwan2`)
             - **Auto FreeRAM:** `/usr/bin/freeram.sh` aktif otomatis setiap pukul `03:00`
             - **Upgrade dari LuCI:** Gunakan `*-squashfs-sysupgrade.bin` (matikan centang *Keep settings*).
