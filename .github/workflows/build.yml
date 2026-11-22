@@ -4,11 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       branch:
-        description: 'Pilih Branch / Tag OpenWrt'
+        description: 'Pilih Tag / Branch OpenWrt'
         required: true
-        default: 'openwrt-25.12'
+        default: 'v25.12.6'
         type: choice
         options:
+          - v25.12.6
           - openwrt-25.12
           - openwrt-24.10
           - main
@@ -42,9 +43,9 @@ jobs:
             python3-pyelftools qemu-utils re2c rsync scons squashfs-tools subversion swig texinfo uglifyjs \
             upx-ucl unzip vim wget xmlto xxd zlib1g-dev zstd
 
-      - name: Clone Source OpenWrt Resmi
+      - name: Clone Source OpenWrt
         run: |
-          git clone --depth=1 -b ${{ github.event.inputs.branch || 'openwrt-25.12' }} https://github.com/openwrt/openwrt.git openwrt
+          git clone --depth=1 -b ${{ github.event.inputs.branch || 'v25.12.6' }} https://github.com/openwrt/openwrt.git openwrt
 
       - name: Cache Source & Ccache
         uses: actions/cache@v4
@@ -52,9 +53,9 @@ jobs:
           path: |
             openwrt/dl
             openwrt/.ccache
-          key: openwrt-${{ github.event.inputs.branch || 'openwrt-25.12' }}-${{ hashFiles('.github/workflows/build-openwrt.yml') }}
+          key: openwrt-${{ github.event.inputs.branch || 'v25.12.6' }}-${{ hashFiles('.github/workflows/build.yml') }}
           restore-keys: |
-            openwrt-${{ github.event.inputs.branch || 'openwrt-25.12' }}-
+            openwrt-${{ github.event.inputs.branch || 'v25.12.6' }}-
 
       - name: Update & Install Feeds
         working-directory: openwrt
@@ -62,7 +63,7 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      - name: Terapkan Patch BREED & Konfigurasi Permanen OpenWrt
+      - name: Terapkan Patch BREED, FreeRAM & Konfigurasi Permanen
         working-directory: openwrt
         run: |
           # 1. Timpa DTS dengan peta partisi BREED dari folder patch/
@@ -93,7 +94,27 @@ jobs:
             sed -i '/case "$board" in/r ../patch/upgrade.txt' "$UPGRADE_FILE"
           fi
 
-          # 4. Tanamkan skrip uci-defaults permanen (LAN, MWAN3, WiFi, & Auto FreeRAM)
+          # 4. Tanamkan /usr/bin/freeram.sh permanen ke dalam firmware
+          mkdir -p package/base-files/files/usr/bin
+          cat <<'FREERAM_EOF' > package/base-files/files/usr/bin/freeram.sh
+          #!/bin/sh
+          # Script Pembersih RAM & Log - JOS!
+
+          # Pastikan data tersimpan ke disk sebelum hapus cache
+          sync
+
+          # Bersihkan Cache RAM (PageCache, dentries, dan inodes)
+          echo 3 > /proc/sys/vm/drop_caches
+
+          # Bersihkan log sistem di RAM (/tmp/log) agar tidak menumpuk
+          rm -rf /tmp/log/*
+
+          # Notif ke log sistem
+          logger "RAM and Logs have been cleared by Maintenance Script (3 AM)"
+          FREERAM_EOF
+          chmod +x package/base-files/files/usr/bin/freeram.sh
+
+          # 5. Tanamkan skrip uci-defaults permanen (LAN, MWAN3, WiFi, & Crontab FreeRAM)
           mkdir -p package/base-files/files/etc/uci-defaults
           cat <<'OUTER_EOF' > package/base-files/files/etc/uci-defaults/999-custom-settings
           #!/bin/sh
@@ -204,32 +225,12 @@ jobs:
           done
           uci commit wireless
 
-          # --- 6. AUTO FREERAM SCRIPT & CRONTAB JAM 03:00 ---
-          cat << 'EOF' > /usr/bin/freeram.sh
-          #!/bin/sh
-          # Script Pembersih RAM & Log - JOS!
-
-          # Pastikan data tersimpan ke disk sebelum hapus cache
-          sync
-
-          # Bersihkan Cache RAM (PageCache, dentries, dan inodes)
-          echo 3 > /proc/sys/vm/drop_caches
-
-          # Bersihkan log sistem di RAM (/tmp/log) agar tidak menumpuk
-          rm -rf /tmp/log/*
-
-          # Notif ke log sistem
-          logger "RAM and Logs have been cleared by Maintenance Script (3 AM)"
-          EOF
-
-          chmod +x /usr/bin/freeram.sh
+          # --- 6. AUTO FREERAM CRONTAB (SETIAP JAM 03:00) ---
           mkdir -p /etc/crontabs
           touch /etc/crontabs/root
           sed -i '/freeram.sh/d' /etc/crontabs/root
           echo "0 3 * * * /usr/bin/freeram.sh" >> /etc/crontabs/root
-          /etc/init.d/cron enable
-          /etc/init.d/cron restart
-          /usr/bin/freeram.sh
+          /etc/init.d/cron enable 2>/dev/null || true
 
           exit 0
           OUTER_EOF
@@ -244,15 +245,12 @@ jobs:
           CONFIG_TARGET_ramips_mt7621_DEVICE_zte_e8820s=y
           CONFIG_CCACHE=y
 
-          # --- LuCI, Tema & SSL (Varian OpenSSL agar tidak bentrok apk) ---
+          # --- LuCI, Tema & Utilitas ---
           CONFIG_PACKAGE_luci=y
-          CONFIG_PACKAGE_luci-ssl-openssl=y
+          CONFIG_PACKAGE_luci-ssl=y
           CONFIG_PACKAGE_luci-theme-material=y
           CONFIG_PACKAGE_luci-app-filemanager=y
           CONFIG_PACKAGE_luci-app-ttyd=y
-          # CONFIG_PACKAGE_luci-ssl is not set
-          # CONFIG_PACKAGE_libustream-mbedtls is not set
-          # CONFIG_PACKAGE_px5g-mbedtls is not set
 
           # --- MWAN3 Load Balancing ---
           CONFIG_PACKAGE_mwan3=y
@@ -302,9 +300,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: openwrt-e8820s-${{ github.run_number }}
-          name: OpenWrt ${{ github.event.inputs.branch || 'openwrt-25.12' }} ZTE E8820S MWAN3 (Build #${{ github.run_number }})
+          name: OpenWrt ${{ github.event.inputs.branch || 'v25.12.6' }} ZTE E8820S MWAN3 (Build #${{ github.run_number }})
           body: |
-            Custom build **OpenWrt Resmi ${{ github.event.inputs.branch || 'openwrt-25.12' }}** untuk **ZTE E8820S (BREED Layout HC5962)** dengan konfigurasi permanen:
+            Custom build **OpenWrt ${{ github.event.inputs.branch || 'v25.12.6' }}** untuk **ZTE E8820S (BREED Layout HC5962)** dengan konfigurasi permanen:
             - **LAN IP:** `192.168.11.1`
             - **WiFi 2.4G & 5G:** Aktif (`OpenWrt`, tanpa password)
             - **MWAN3:** Load Balance (`wan1`–`wan4`, `wanusb`, `wwan`, `wwan2`)
