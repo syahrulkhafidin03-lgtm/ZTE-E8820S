@@ -4,15 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       branch:
-        description: 'Pilih Tag / Branch OpenWrt'
+        description: 'Versi OpenWrt'
         required: true
         default: 'v25.12.6'
         type: choice
         options:
           - v25.12.6
-          - openwrt-25.12
-          - openwrt-24.10
-          - main
 
 permissions:
   contents: write
@@ -43,9 +40,9 @@ jobs:
             python3-pyelftools qemu-utils re2c rsync scons squashfs-tools subversion swig texinfo uglifyjs \
             upx-ucl unzip vim wget xmlto xxd zlib1g-dev zstd
 
-      - name: Clone Source OpenWrt
+      - name: Clone Source OpenWrt v25.12.6
         run: |
-          git clone --depth=1 -b ${{ github.event.inputs.branch || 'v25.12.6' }} https://github.com/openwrt/openwrt.git openwrt
+          git clone --depth=1 -b v25.12.6 https://github.com/openwrt/openwrt.git openwrt
 
       - name: Cache Source & Ccache
         uses: actions/cache@v4
@@ -53,9 +50,9 @@ jobs:
           path: |
             openwrt/dl
             openwrt/.ccache
-          key: openwrt-${{ github.event.inputs.branch || 'v25.12.6' }}-${{ hashFiles('.github/workflows/build.yml') }}
+          key: openwrt-v25.12.6-official-${{ hashFiles('.github/workflows/build.yml') }}
           restore-keys: |
-            openwrt-${{ github.event.inputs.branch || 'v25.12.6' }}-
+            openwrt-v25.12.6-official-
 
       - name: Update & Install Feeds
         working-directory: openwrt
@@ -98,18 +95,11 @@ jobs:
           mkdir -p package/base-files/files/usr/bin
           cat <<'FREERAM_EOF' > package/base-files/files/usr/bin/freeram.sh
           #!/bin/sh
-          # Script Pembersih RAM & Log - JOS!
+          # Script Pembersih RAM & Log
 
-          # Pastikan data tersimpan ke disk sebelum hapus cache
           sync
-
-          # Bersihkan Cache RAM (PageCache, dentries, dan inodes)
           echo 3 > /proc/sys/vm/drop_caches
-
-          # Bersihkan log sistem di RAM (/tmp/log) agar tidak menumpuk
           rm -rf /tmp/log/*
-
-          # Notif ke log sistem
           logger "RAM and Logs have been cleared by Maintenance Script (3 AM)"
           FREERAM_EOF
           chmod +x package/base-files/files/usr/bin/freeram.sh
@@ -236,13 +226,28 @@ jobs:
           OUTER_EOF
           chmod +x package/base-files/files/etc/uci-defaults/999-custom-settings
 
-      - name: Konfigurasi Target & Paket (.config)
+      - name: Gunakan config.buildinfo Resmi OpenWrt 25.12.6 + Paket Tambahan
         working-directory: openwrt
         run: |
-          cat <<'EOF' > .config
+          wget -O .config https://downloads.openwrt.org/releases/25.12.6/targets/ramips/mt7621/config.buildinfo
+
+          # Kunci build hanya untuk ZTE E8820S agar tidak merakit 200+ router lain & SDK
+          sed -i '/CONFIG_TARGET_DEVICE_/d' .config
+          sed -i '/CONFIG_TARGET_MULTI_PROFILE/d' .config
+          sed -i '/CONFIG_TARGET_ALL_PROFILES/d' .config
+          sed -i '/CONFIG_TARGET_PER_DEVICE_ROOTFS/d' .config
+          sed -i '/CONFIG_IB/d' .config
+          sed -i '/CONFIG_SDK/d' .config
+
+          cat <<'EOF' >> .config
           CONFIG_TARGET_ramips=y
           CONFIG_TARGET_ramips_mt7621=y
           CONFIG_TARGET_ramips_mt7621_DEVICE_zte_e8820s=y
+          # CONFIG_TARGET_MULTI_PROFILE is not set
+          # CONFIG_TARGET_ALL_PROFILES is not set
+          # CONFIG_TARGET_PER_DEVICE_ROOTFS is not set
+          # CONFIG_IB is not set
+          # CONFIG_SDK is not set
           CONFIG_CCACHE=y
 
           # --- LuCI, Tema & Utilitas ---
@@ -284,7 +289,7 @@ jobs:
           find dl -size -1024c -exec ls -l {} \;
           find dl -size -1024c -exec rm -f {} \;
 
-      - name: Compile Firmware OpenWrt
+      - name: Compile Firmware OpenWrt 25.12.6
         working-directory: openwrt
         run: |
           make -j$(nproc) || make -j1 V=s
@@ -299,12 +304,11 @@ jobs:
       - name: Upload ke GitHub Releases
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: openwrt-e8820s-${{ github.run_number }}
-          name: OpenWrt ${{ github.event.inputs.branch || 'v25.12.6' }} ZTE E8820S MWAN3 (Build #${{ github.run_number }})
+          tag_name: openwrt-25.12.6-e8820s-${{ github.run_number }}
+          name: OpenWrt 25.12.6 ZTE E8820S Official Base + MWAN3 (Build #${{ github.run_number }})
           body: |
-            Custom build **OpenWrt ${{ github.event.inputs.branch || 'v25.12.6' }}** untuk **ZTE E8820S (BREED Layout HC5962)** dengan konfigurasi permanen:
-            - **LAN IP:** `192.168.11.1`
-            - **WiFi 2.4G & 5G:** Aktif (`OpenWrt`, tanpa password)
+            Custom build **OpenWrt v25.12.6** (menggunakan `config.buildinfo` resmi agar 100% kompatibel dengan seluruh paket & `kmods` online OpenWrt) untuk **ZTE E8820S (BREED Layout HC5962)**:
+            - **LAN IP:** `192.168.11.1` | **WiFi 2.4G & 5G:** Aktif (`OpenWrt`, tanpa password)
             - **MWAN3:** Load Balance (`wan1`–`wan4`, `wanusb`, `wwan`, `wwan2`)
             - **Auto FreeRAM:** `/usr/bin/freeram.sh` aktif otomatis setiap pukul `03:00`
             - **Upgrade dari LuCI:** Gunakan `*-squashfs-sysupgrade.bin` (matikan centang *Keep settings*).
