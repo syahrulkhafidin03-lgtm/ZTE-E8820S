@@ -46,6 +46,16 @@ jobs:
         run: |
           git clone --depth=1 -b ${{ github.event.inputs.branch || 'openwrt-25.12' }} https://github.com/immortalwrt/immortalwrt.git immortalwrt
 
+      - name: Cache Source & Ccache (Percepat Build Berikutnya)
+        uses: actions/cache@v4
+        with:
+          path: |
+            immortalwrt/dl
+            immortalwrt/.ccache
+          key: immortalwrt-${{ github.event.inputs.branch || 'openwrt-25.12' }}-${{ hashFiles('.github/workflows/build.yml') }}
+          restore-keys: |
+            immortalwrt-${{ github.event.inputs.branch || 'openwrt-25.12' }}-
+
       - name: Update & Install Feeds
         working-directory: immortalwrt
         run: |
@@ -83,10 +93,10 @@ jobs:
             sed -i '/case "$board" in/r ../patch/upgrade.txt' "$UPGRADE_FILE"
           fi
 
-          # 4. Masukkan 99-default-settings
+          # 4. Masukkan 99-default-settings sebagai 999-custom-settings agar tidak bentrok dengan paket default-settings ImmortalWrt
           if [ -f ../patch/99-default-settings ]; then
             mkdir -p package/base-files/files/etc/uci-defaults
-            cp -f ../patch/99-default-settings package/base-files/files/etc/uci-defaults/99-default-settings
+            cp -f ../patch/99-default-settings package/base-files/files/etc/uci-defaults/999-custom-settings
           fi
 
       - name: Konfigurasi Target & Paket (.config)
@@ -96,6 +106,7 @@ jobs:
           CONFIG_TARGET_ramips=y
           CONFIG_TARGET_ramips_mt7621=y
           CONFIG_TARGET_ramips_mt7621_DEVICE_zte_e8820s=y
+          CONFIG_CCACHE=y
 
           # --- Interface LuCI & SSL (Varian OpenSSL agar tidak bentrok apk) ---
           CONFIG_PACKAGE_luci=y
@@ -158,4 +169,3 @@ jobs:
             - **Upgrade dari LuCI:** Gunakan `*-squashfs-sysupgrade.bin` (matikan centang *Keep settings*).
             - **Install lewat BREED Web:** Gunakan `*-squashfs-factory.bin` dengan layout **HC5962**.
           files: output/*
-          
