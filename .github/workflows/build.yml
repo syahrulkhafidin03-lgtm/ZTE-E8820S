@@ -1,214 +1,162 @@
-name: Build OpenWrt Firmware
-run-name: Build OpenWrt Firmware for ZTE E8820S ${{ inputs.repo_branch }}
+name: Build ImmortalWrt ZTE E8820S (BREED)
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
     inputs:
-      repo_branch:
-        description: 'OpenWrt branch or tag (e.g., openwrt-23.05, v23.05.3)'
+      branch:
+        description: 'Pilih Branch ImmortalWrt'
         required: true
-        default: 'openwrt-23.05'
-        type: string
-
-      config_link:
-        description: 'Paste raw config file from pastebin'
-        required: true
-        type: string
-
-      toolchain_link:
-        description: 'URL to the pre-compiled toolchain tarball'
-        required: true
-        type: string
-      
-      llvm_link:
-        description: 'URL to the pre-compiled LLVM BPF tarball'
-        required: true
-        type: string
-
-      target_arch:
-        description: 'Target architecture (e.g., ramips/mt7621)'
-        required: true
-        default: 'ramips/mt7621'
-        type: string
-
-      is_latest:
-        description: 'Set the release as latest'
-        default: false
-        type: boolean
-
-      is_prerelease:
-        description: 'Set the release as pre-release'
-        default: true
-        type: boolean
+        default: 'openwrt-25.12'
+        type: choice
+        options:
+          - openwrt-25.12
+          - openwrt-24.10
+          - master
 
 permissions:
   contents: write
 
-env:
-  REPO_URL: https://github.com/openwrt/openwrt
-  OPENWRT_RELEASE: ${{ github.event.inputs.repo_branch || 'openwrt-23.05' }}
-  OPENWRT_TARGET: ${{ github.event.inputs.target_arch || 'ramips/mt7621' }}
-  TOOLCHAIN_URL : ${{ github.event.inputs.toolchain_link || 'https://downloads.openwrt.org/releases/23.05.3/toolchain-mipsel_24kc_gcc-12.3.0_musl.Linux-x86_64.tar.xz' }}
-  LLVM_URL : ${{ github.event.inputs.llvm_link || 'https://downloads.openwrt.org/releases/23.05.3/packages/mipsel_24kc/base/lld_16.0.6-2_mipsel_24kc.ipk' }}
-
 jobs:
   build:
-    runs-on: ubuntu-latest
-    
+    runs-on: ubuntu-24.04
+
     steps:
-    - name: Checkout Repository
-      uses: actions/checkout@v6
+      - name: Checkout Repo ZTE-E8820S
+        uses: actions/checkout@v4
 
-    - name: Free Disk Space
-      run: |
-        sudo rm -rf /usr/share/dotnet
-        sudo rm -rf /usr/local/lib/android
-        sudo rm -rf /opt/ghc
-        sudo apt-get clean
+      - name: Bersihkan Ruang Disk Runner
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force || true
+          df -h
 
-    - name: Install Build Dependencies
-      run: |
-        sudo apt update
-        sudo apt install build-essential clang flex bison g++ gawk \
-        gcc-multilib g++-multilib gettext git libncurses5-dev libssl-dev \
-        python3-setuptools rsync swig unzip zlib1g-dev file wget
+      - name: Install Dependensi Kompilasi
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential \
+            bzip2 ccache clang cmake cpio curl device-tree-compiler ecj fastjar flex gawk gettext gcc-multilib \
+            g++-multilib git gnutls-dev gperf haveged help2man intltool lib32gcc-s1 libc6-dev-i386 libelf-dev \
+            libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses-dev libpython3-dev \
+            libreadline-dev libssl-dev libtool libyaml-dev libz-dev lld llvm lrzsz mkisofs msmtp nano \
+            ninja-build p7zip p7zip-full patch pkgconf python3 python3-pip python3-ply python3-docutils \
+            python3-pyelftools qemu-utils re2c rsync scons squashfs-tools subversion swig texinfo uglifyjs \
+            upx-ucl unzip vim wget xmlto xxd zlib1g-dev zstd
 
-    - name: Clone OpenWrt Source
-      run: git clone --depth 1 $REPO_URL -b ${{ env.OPENWRT_RELEASE }} openwrt
+      - name: Clone Source ImmortalWrt
+        run: |
+          git clone --depth=1 -b ${{ github.event.inputs.branch || 'openwrt-25.12' }} https://github.com/immortalwrt/immortalwrt.git immortalwrt
 
-    - name: Download External Toolchain
-      run: |
-        mkdir -p /opt/toolchain
-        toolchain_name="${TOOLCHAIN_URL##*/}"
-        llvm_name="${LLVM_URL##*/}"
-        
-        echo "Downloading $toolchain_name..."
-        wget -q "$TOOLCHAIN_URL"
-        tar -xf "$toolchain_name" -C /opt/toolchain --strip-components=2 --wildcards "*/toolchain-mipsel_24kc_gcc-*"
-        rm "$toolchain_name"
+      - name: Update & Install Feeds
+        working-directory: immortalwrt
+        run: |
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
 
-        echo "Downloading $LLVM_URL..."
-        wget -q "$LLVM_URL"
-        tar -xf "$llvm_name" -C ./openwrt || touch ./openwrt/$llvm_name
-        rm -f "$llvm_name"
+      - name: Terapkan Patch BREED & Custom Files dari Repo
+        working-directory: immortalwrt
+        run: |
+          # 1. Timpa DTS dengan versi BREED dari folder patch/ Anda
+          cp -f ../patch/mt7621_zte_e8820s.dts target/linux/ramips/dts/mt7621_zte_e8820s.dts
 
-    - name: Applying patch
-      run: |
-        cp patch/mt7621_zte_e8820s.dts openwrt/target/linux/ramips/dts/
-        sed -i '/esac/e cat patch/leds.txt' openwrt/target/linux/ramips/mt7621/base-files/etc/board.d/01_leds || true
-        sed -i '72r patch/upgrade.txt' openwrt/target/linux/ramips/mt7621/base-files/lib/upgrade/platform.sh || true
-        cat patch/zte.txt >> openwrt/target/linux/ramips/image/mt7621.mk || true
-        cp patch/99-default-settings openwrt/package/base-files/files/etc/uci-defaults/ || true
-        
-        if [ -d "files" ]; then
-          echo "Injecting custom static config files..."
-          cp -r files openwrt/
-        fi
+          # 2. Hapus definisi zte_e8820s bawaan ImmortalWrt (U-Boot mod), lalu masukkan patch/zte.txt
+          python3 - <<'PY'
+          import re
+          mk_path = "target/linux/ramips/image/mt7621.mk"
+          with open(mk_path, "r", encoding="utf-8") as f:
+              content = f.read()
+          content = re.sub(r"\ndefine Device/zte_e8820s\b.*?TARGET_DEVICES \+= zte_e8820s\s*", "\n", content, flags=re.DOTALL)
+          with open("../patch/zte.txt", "r", encoding="utf-8") as f:
+              zte_patch = f.read()
+          with open(mk_path, "w", encoding="utf-8") as f:
+              f.write(content.rstrip() + "\n\n" + zte_patch.strip() + "\n")
+          PY
 
-    - name: Update and Install Feeds
-      working-directory: ./openwrt
-      run: |
-        ./scripts/feeds update -a
-        ./scripts/feeds install -a
+          # 3. Terapkan patch LED & Sysupgrade secara aman (hindari duplikat)
+          LEDS_FILE="target/linux/ramips/mt7621/base-files/etc/board.d/01_leds"
+          UPGRADE_FILE="target/linux/ramips/mt7621/base-files/lib/upgrade/platform.sh"
 
-    - name: Generate Custom Configuration & Inject Toolchain
-      working-directory: ./openwrt
-      run: |
-        if [ -n "${{ github.event.inputs.config_link }}" ]; then
-          wget -q -O .config "${{ github.event.inputs.config_link }}"
-        else
+          if ! grep -q "zte,e8820s" "$LEDS_FILE" && [ -f ../patch/leds.txt ]; then
+            sed -i '/esac/e cat ../patch/leds.txt' "$LEDS_FILE"
+          fi
+
+          if ! grep -q "zte,e8820s" "$UPGRADE_FILE" && [ -f ../patch/upgrade.txt ]; then
+            sed -i '/case "$board" in/r ../patch/upgrade.txt' "$UPGRADE_FILE"
+          fi
+
+          # 4. Masukkan 99-default-settings & folder custom files/ (mwan3, dll)
+          if [ -f ../patch/99-default-settings ]; then
+            mkdir -p package/base-files/files/etc/uci-defaults
+            cp -f ../patch/99-default-settings package/base-files/files/etc/uci-defaults/99-default-settings
+          fi
+
+          if [ -d ../files ]; then
+            cp -rf ../files ./files
+          fi
+
+      - name: Konfigurasi Target & Paket (.config)
+        working-directory: immortalwrt
+        run: |
+          cat <<'EOF' > .config
+          CONFIG_TARGET_ramips=y
+          CONFIG_TARGET_ramips_mt7621=y
+          CONFIG_TARGET_ramips_mt7621_DEVICE_zte_e8820s=y
+
+          # --- Interface LuCI & Bahasa/Tema ---
+          CONFIG_PACKAGE_luci=y
+          CONFIG_PACKAGE_luci-ssl=y
+
+          # --- Multi-WAN & Load Balancing (sesuai folder files/etc/config Anda) ---
+          CONFIG_PACKAGE_mwan3=y
+          CONFIG_PACKAGE_luci-app-mwan3=y
+
+          # --- SQM QoS Anti-Lag & DNS-over-HTTPS ---
+          CONFIG_PACKAGE_sqm-scripts=y
+          CONFIG_PACKAGE_luci-app-sqm=y
+          CONFIG_PACKAGE_https-dns-proxy=y
+          CONFIG_PACKAGE_luci-app-https-dns-proxy=y
+
+          # --- Dukungan USB 3.0 & Storage ---
+          CONFIG_PACKAGE_kmod-usb3=y
+          CONFIG_PACKAGE_kmod-usb-storage=y
+          CONFIG_PACKAGE_kmod-fs-ext4=y
+          CONFIG_PACKAGE_block-mount=y
+
+          # --- Utilitas Script & Terminal ---
+          CONFIG_PACKAGE_curl=y
+          CONFIG_PACKAGE_ca-bundle=y
+          CONFIG_PACKAGE_bash=y
+          CONFIG_PACKAGE_htop=y
+          EOF
+
           make defconfig
-        fi
-        ./scripts/ext-toolchain.sh --toolchain /opt/toolchain --overwrite-config --config ${{ env.OPENWRT_TARGET }}
 
-    - name: Append Custom Packages to .config
-      working-directory: ./openwrt
-      run: |
-        echo "Mengaktifkan paket loadbalance, modem seluler, tema, dan aplikasi manajemen file..."
-        
-        sed -i '/CONFIG_PACKAGE_mwan3/d' .config
-        sed -i '/CONFIG_PACKAGE_luci-app-mwan3/d' .config
-        sed -i '/CONFIG_PACKAGE_luci-proto-3g/d' .config
-        sed -i '/CONFIG_PACKAGE_chat/d' .config
-        sed -i '/CONFIG_PACKAGE_comgt/d' .config
-        sed -i '/CONFIG_PACKAGE_usb-modeswitch/d' .config
-        sed -i '/CONFIG_PACKAGE_usbutils/d' .config
-        sed -i '/CONFIG_PACKAGE_kmod-usb-net-rtl8152/d' .config
-        sed -i '/CONFIG_PACKAGE_r8152-firmware/d' .config
-        sed -i '/CONFIG_PACKAGE_kmod-usb3/d' .config
-        sed -i '/CONFIG_PACKAGE_kmod-usb-xhci-mtk/d' .config
-        sed -i '/CONFIG_PACKAGE_luci-app-filemanager/d' .config
-        sed -i '/CONFIG_PACKAGE_luci-theme-material/d' .config
-        
-        cat << 'EOF' >> .config
-        CONFIG_PACKAGE_mwan3=y
-        CONFIG_PACKAGE_luci-app-mwan3=y
-        CONFIG_PACKAGE_luci-proto-3g=y
-        CONFIG_PACKAGE_chat=y
-        CONFIG_PACKAGE_comgt=y
-        CONFIG_PACKAGE_usb-modeswitch=y
-        CONFIG_PACKAGE_usbutils=y
-        CONFIG_PACKAGE_kmod-usb-net-rtl8152=y
-        CONFIG_PACKAGE_r8152-firmware=y
-        CONFIG_PACKAGE_kmod-usb3=y
-        CONFIG_PACKAGE_kmod-usb-xhci-mtk=y
-        CONFIG_PACKAGE_luci-app-filemanager=y
-        CONFIG_PACKAGE_luci-theme-material=y
-EOF
-        
-        make defconfig
+      - name: Download Source Paket
+        working-directory: immortalwrt
+        run: |
+          make download -j$(nproc)
+          find dl -size -1024c -exec ls -l {} \;
+          find dl -size -1024c -exec rm -f {} \;
 
-    - name: Download Packages
-      working-directory: ./openwrt
-      run: |
-        make download -j8
-        find dl -size -1024c -exec ls -l {} \;
-        find dl -size -1024c -exec rm -f {} \;
+      - name: Compile Firmware ImmortalWrt
+        working-directory: immortalwrt
+        run: |
+          make -j$(nproc) || make -j1 V=s
 
-    - name: Compile OpenWrt
-      working-directory: ./openwrt
-      run: |
-        echo -e "$(nproc) thread compile"
-        make -j$(nproc) || make -j1 V=s
-        rm -rf bin/targets/ramips/mt7621/packages
+      - name: Siapkan File Output
+        run: |
+          mkdir -p output
+          cp -f immortalwrt/bin/targets/ramips/mt7621/*zte_e8820s* output/
+          cp -f immortalwrt/.config output/config.buildinfo
+          ls -lh output/
 
-    - name: Extract Vermagic
-      id: get_vermagic
-      run: |
-        JSON_FILE="openwrt/bin/targets/ramips/mt7621/profiles.json"
-        VERMAGIC=$(grep -oP '"vermagic":"\K[^"]+' "$JSON_FILE" || echo "unknown")
-        
-        VER_URL=$(dirname "${{ env.TOOLCHAIN_URL }}")
-
-        if curl -s "$VER_URL/kmods/" | grep -q "$VERMAGIC"; then
-          echo "vermagic=$VERMAGIC | ✅ Matched with Openwrt Official Build" >> $GITHUB_OUTPUT
-        else
-          echo "vermagic=$VERMAGIC | ❌ Mismatch with Openwrt Official Build" >> $GITHUB_OUTPUT
-        fi
-
-    - name: Generate Release Tag
-      id: tag
-      run: |
-        echo "release_tag=${{ env.OPENWRT_RELEASE }}-$(date +'%Y.%m.%d-%H%M')" >> $GITHUB_OUTPUT
-        echo "release_name=OpenWrt ZTE E8820S ${{ env.OPENWRT_RELEASE }} $(date +'%Y.%m.%d')" >> $GITHUB_OUTPUT
-
-    - name: Publish to GitHub Releases
-      uses: softprops/action-gh-release@v2.6.1
-      with:
-        tag_name: ${{ steps.tag.outputs.release_tag }}
-        name: ${{ steps.tag.outputs.release_name }}
-        prerelease: ${{ github.event.inputs.is_prerelease || 'true' }}
-        make_latest: ${{ github.event.inputs.is_latest || 'false' }}
-        files: openwrt/bin/targets/ramips/mt7621/*
-        body: |
-          ## ZTE E8820S OpenWrt Firmware ${{ env.OPENWRT_RELEASE }}
-          Automated OpenWrt firmware build for ZTE E8820S.
+      - name: Upload ke GitHub Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: immortalwrt-e8820s-${{ github.run_number }}
+          name: ImmortalWrt ${{ github.event.inputs.branch || 'openwrt-25.12' }} ZTE E8820S (Build #${{ github.run_number }})
+          body: |
+            Custom build ImmortalWrt untuk **ZTE E8820S (BREED Layout HC5962)** dengan konfigurasi bawaan dari folder `files/` dan `patch/`.
+            - **Upgrade dari LuCI:** Gunakan `*-squashfs-sysupgrade.bin` (matikan centang *Keep settings*).
+            - **Install lewat BREED Web:** Gunakan `*-squashfs-factory.bin` dengan layout **HC5962**.
+          files: output/*
           
-          Version: ${{ env.OPENWRT_RELEASE }}
-          Vermagic: ${{ steps.get_vermagic.outputs.vermagic }}
-          *Compiled using pre-compiled OpenWrt toolchain*
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
