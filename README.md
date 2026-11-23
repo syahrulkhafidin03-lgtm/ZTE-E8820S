@@ -3,12 +3,12 @@ Custom firmware for ZTE E8220S based on official [OpenWrt](https://github.com/op
 
 ## Default login
 ```
-URL = 192.168.1.1
+URL = 192.168.11.1
 user = root
 no password, just hit enter
 
-Wi-Fi ssid = OpenWrt
-Password = 12345678
+Wi-Fi ssid = OpenWrt/ImmortalWrt 
+Password = No password
 ```
 
 ## Compiling
@@ -54,7 +54,7 @@ This firmware required [BREED](https://breed.hackpascal.net/) to boot.
 If your device using **U-Boot** mod use the official [ImmortalWRT Build](https://firmware-selector.immortalwrt.org/)
 
 1. Reboot to BREED web recovery by turning on the router and press & hold reset button for 5 seconds
-2. Connect to router via lan 1 port & go to http://192.168.1.1
+2. Connect to router via lan 1 port & go to http://192.168.11.1
 3. Select **openwrt-*-ramips-mt7621-zte_e8820s-squashfs-factory.bin** firmware & HC5962 layout
 ![Installation](image/BREED.webp)
 
@@ -62,7 +62,7 @@ If your device using **U-Boot** mod use the official [ImmortalWRT Build](https:/
 > The upgrade only work from latest release v24.10.6 to v25.12
 > Since I forgot to include upgrade patch
 
-1. Open your router LUCI web. e.g http://192.168.1.1
+1. Open your router LUCI web. e.g http://192.168.11.1
 2. Navigate to System > Backup / Flash Firmware > Flash new firmware image
 3. Upload the **openwrt-*-ramips-mt7621-zte_e8820s-squashfs-sysupgrade.bin** file > Continue > the router will restart to finish the upgrade
 
