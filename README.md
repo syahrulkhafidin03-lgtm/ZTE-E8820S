@@ -1,4 +1,4 @@
-# ZTE E8820S OpenWrt
+# ZTE E8820S OpenWrt/ImmortalWrt
 Custom firmware for ZTE E8220S based on official [OpenWrt](https://github.com/openwrt/openwrt)
 
 ## Default login
