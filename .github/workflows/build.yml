@@ -60,7 +60,7 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      - name: Terapkan Patch BREED, Max Performance Tuning, FreeRAM & MWAN3
+      - name: Terapkan Patch BREED, Tuning Performa, SmartDNS & MWAN3
         working-directory: immortalwrt
         run: |
           # 1. Timpa DTS dengan peta partisi BREED dari folder patch/
@@ -141,7 +141,7 @@ jobs:
           FREERAM_EOF
           chmod +x package/base-files/files/usr/bin/freeram.sh
 
-          # 6. Tanamkan skrip uci-defaults permanen (Fullcone NAT, Multi-Core, WiFi Pro, MWAN3 & Cron)
+          # 6. Tanamkan skrip uci-defaults permanen (Fullcone NAT, Multi-Core, WiFi Pro, SmartDNS, MWAN3 & Cron)
           mkdir -p package/base-files/files/etc/uci-defaults
           cat <<'OUTER_EOF' > package/base-files/files/etc/uci-defaults/999-custom-settings
           #!/bin/sh
@@ -195,9 +195,7 @@ jobs:
           uci commit network
 
           # --- 4. FIREWALL ZONES & IMMORTALWRT NATIVE FULLCONE NAT ---
-          # Aktifkan Fullcone NAT bawaan ImmortalWrt untuk ping stabil & gaming
           uci set firewall.@defaults[0].fullcone='1'
-          # Matikan Flow Offloading agar penandaan paket MWAN3 tetap akurat 100%
           uci set firewall.@defaults[0].flow_offloading='0'
           uci set firewall.@defaults[0].flow_offloading_hw='0'
 
@@ -281,12 +279,99 @@ jobs:
           done
           uci commit wireless
 
-          # --- 7. PERCEPAT CACHE DNS (DNSMASQ) ---
-          uci set dhcp.@dnsmasq[0].cachesize='4096'
-          uci set dhcp.@dnsmasq[0].min_cache_ttl='60'
-          uci set dhcp.@dnsmasq[0].neg_ttl='30'
-          uci set dhcp.@dnsmasq[0].dns_forward_max='300'
-          uci commit dhcp
+          # --- 7. RAPIKAN FEED APK & KONFIGURASI SMARTDNS DUAL-ENGINE (6053 + 6054 GAMING) ---
+          sed -i 's|^\(.*mipsel_24kc/video/packages.adb\)|#\1|' /etc/apk/repositories.d/*.list 2>/dev/null || true
+
+          if command -v smartdns >/dev/null 2>&1; then
+              mkdir -p /etc/smartdns
+              while uci -q delete smartdns.@smartdns[0]; do :; done
+              uci add smartdns smartdns >/dev/null
+              uci set smartdns.@smartdns[0].enabled='1'
+              uci set smartdns.@smartdns[0].server_name='smartdns-e8820s'
+              uci set smartdns.@smartdns[0].port='6053'
+              uci set smartdns.@smartdns[0].auto_set_dnsmasq='0'
+              uci set smartdns.@smartdns[0].ipv6_server='0'
+              uci set smartdns.@smartdns[0].dualstack_ip_selection='0'
+              uci set smartdns.@smartdns[0].prefetch_domain='1'
+              uci set smartdns.@smartdns[0].serve_expired='1'
+              uci set smartdns.@smartdns[0].cache_size='16384'
+              uci set smartdns.@smartdns[0].rr_ttl_min='60'
+              uci set smartdns.@smartdns[0].rr_ttl_max='86400'
+              uci set smartdns.@smartdns[0].force_aaaa_soa='1'
+              uci set smartdns.@smartdns[0].speed_check_mode='ping,tcp:443,tcp:80'
+              uci set smartdns.@smartdns[0].response_mode='first-ping'
+              uci commit smartdns
+
+              cat << 'CONF' > /etc/smartdns/custom.conf
+          # --- CACHE RAM 0MS & ANTI-AUS FLASH NAND ---
+          cache-persist yes
+          cache-file /tmp/smartdns.cache
+          serve-expired-ttl 86400
+          serve-expired-reply-ttl 3
+          tcp-idle-time 120
+          max-reply-ip-num 2
+
+          # --- LISTENER PORT 6054: KHUSUS DEDICATED GAMING ---
+          bind :6054 -group gaming
+
+          # ==========================================================
+          # ENGINE 1: DNS SUPER CEPAT & JEBOL SEMUA (DEFAULT PORT 6053)
+          # Menggunakan DoH/DoT IP langsung (Anti-DPI & Anti-Blokir ISP)
+          # ==========================================================
+          server-https https://1.1.1.1/dns-query
+          server-https https://1.0.0.1/dns-query
+          server-https https://94.140.14.140/dns-query
+          server-https https://94.140.14.141/dns-query
+          server-https https://9.9.9.9/dns-query
+          server-https https://8.8.8.8/dns-query
+          server-tls 1.1.1.1:853
+          server-tls 94.140.14.140:853
+
+          # ==========================================================
+          # ENGINE 2: DNS GAMING ULTRA-LOW LATENCY (GROUP: gaming)
+          # Jalur respon tercepat + IPv4 murni anti-jitter
+          # ==========================================================
+          server 1.1.1.1 -group gaming -exclude-default-group
+          server 1.0.0.1 -group gaming -exclude-default-group
+          server 8.8.8.8 -group gaming -exclude-default-group
+          server 8.8.4.4 -group gaming -exclude-default-group
+          server 9.9.9.11 -group gaming -exclude-default-group
+          server 208.67.222.222 -group gaming -exclude-default-group
+          server-tls 1.1.1.1:853 -group gaming -exclude-default-group
+          server-tls 1.0.0.1:853 -group gaming -exclude-default-group
+
+          # --- AUTO-ROUTING DOMAIN GAME KE ENGINE GAMING ---
+          nameserver /mobilelegends.com/gaming
+          nameserver /moonton.com/gaming
+          nameserver /youngjoygame.com/gaming
+          nameserver /bytedance.com/gaming
+          nameserver /garena.com/gaming
+          nameserver /garenanow.com/gaming
+          nameserver /tencent.com/gaming
+          nameserver /pubgmobile.com/gaming
+          nameserver /proximabeta.com/gaming
+          nameserver /riotgames.com/gaming
+          nameserver /valorant.com/gaming
+          nameserver /steampowered.com/gaming
+          nameserver /steamcommunity.com/gaming
+          nameserver /steamcontent.com/gaming
+          nameserver /roblox.com/gaming
+          nameserver /rbxcdn.com/gaming
+          nameserver /supercell.com/gaming
+          nameserver /epicgames.com/gaming
+          nameserver /hoyoverse.com/gaming
+          nameserver /mihoyo.com/gaming
+          CONF
+
+              uci set dhcp.@dnsmasq[0].noresolv='1'
+              uci set dhcp.@dnsmasq[0].cachesize='0'
+              uci set dhcp.@dnsmasq[0].dns_forward_max='300'
+              uci -q delete dhcp.@dnsmasq[0].server || true
+              uci add_list dhcp.@dnsmasq[0].server='127.0.0.1#6053'
+              uci commit dhcp
+
+              /etc/init.d/smartdns enable 2>/dev/null || true
+          fi
 
           # --- 8. AUTO FREERAM CRONTAB (SETIAP JAM 03:00) ---
           mkdir -p /etc/crontabs
@@ -298,6 +383,2370 @@ jobs:
           exit 0
           OUTER_EOF
           chmod +x package/base-files/files/etc/uci-defaults/999-custom-settings
+
+      - name: Tanamkan Custom Package luci-app-nettraffic
+        working-directory: immortalwrt
+        run: |
+          mkdir -p package/base-files/files/etc/config \
+                   package/base-files/files/etc/init.d \
+                   package/base-files/files/etc/uci-defaults \
+                   package/base-files/files/etc/nettraffic \
+                   package/base-files/files/usr/libexec/rpcd \
+                   package/base-files/files/usr/share/luci/menu.d \
+                   package/base-files/files/usr/share/rpcd/acl.d \
+                   package/base-files/files/www/luci-static/resources/view/nettraffic
+
+          # 1. /etc/config/nettraffic (Auto-detect multi-WAN uplinks & LAN1-4 ports)
+          cat <<'NT_CFG_EOF' > package/base-files/files/etc/config/nettraffic
+          config settings 'settings'
+          	option interval '2'
+          	option save_interval '60'
+          	option history '60'
+          	option ports 'lan1 lan2 lan3 lan4'
+          NT_CFG_EOF
+
+          # 2. /etc/init.d/nettraffic
+          cat <<'NT_INIT_EOF' > package/base-files/files/etc/init.d/nettraffic
+          #!/bin/sh /etc/rc.common
+
+          START=95
+          STOP=10
+          USE_PROCD=1
+
+          start_service() {
+          	mkdir -p /var/run/nettraffic /etc/nettraffic
+
+          	procd_open_instance
+          	procd_set_param command /usr/libexec/nettrafficd
+          	procd_set_param respawn 3600 5 5
+          	procd_set_param stdout 0
+          	procd_set_param stderr 0
+          	procd_close_instance
+          }
+
+          reload_service() {
+          	restart
+          }
+          NT_INIT_EOF
+
+          # 3. /etc/uci-defaults/90_luci-app-nettraffic
+          cat <<'NT_UCI_EOF' > package/base-files/files/etc/uci-defaults/90_luci-app-nettraffic
+          #!/bin/sh
+
+          mkdir -p /etc/nettraffic /var/run/nettraffic
+
+          touch /etc/sysupgrade.conf 2>/dev/null || true
+          if [ -f /etc/sysupgrade.conf ] && ! grep -q '^/etc/nettraffic/' /etc/sysupgrade.conf 2>/dev/null; then
+          	echo '/etc/nettraffic/' >> /etc/sysupgrade.conf
+          fi
+
+          /etc/init.d/nettraffic enable >/dev/null 2>&1 || true
+          /etc/init.d/rpcd restart >/dev/null 2>&1 || true
+          exit 0
+          NT_UCI_EOF
+
+          # 4. /usr/libexec/rpcd/nettraffic
+          cat <<'NT_RPCD_EOF' > package/base-files/files/usr/libexec/rpcd/nettraffic
+          #!/bin/sh
+          # rpcd plugin for luci-app-nettraffic.
+
+          RUN_DIR="${NETTRAFFIC_RUN_DIR:-/var/run/nettraffic}"
+          STATUS_FILE="$RUN_DIR/status.json"
+          PID_FILE="$RUN_DIR/pid"
+
+          case "$1" in
+          	list)
+          		printf '%s\n' '{"status":{},"reset":{}}'
+          		;;
+          	call)
+          		case "$2" in
+          			status)
+          				if [ -s "$STATUS_FILE" ]; then
+          					cat "$STATUS_FILE"
+          				else
+          					cat <<'EOF'
+          {"ok":false,"error":"Monitor belum berjalan","wan_detected":false,"interfaces":[],"ifaces":[],"usb_found":false,"uplinks":[],"rx_rate":0,"tx_rate":0,"rx_total":0,"tx_total":0,"day_rx":0,"day_tx":0,"month_rx":0,"month_tx":0,"ports":[],"system":null,"history":[],"interval":2,"save_interval":60}
+          EOF
+          				fi
+          				;;
+          			reset)
+          				_pid=""
+          				[ -s "$PID_FILE" ] && read -r _pid < "$PID_FILE" 2>/dev/null
+          				if [ -n "$_pid" ] && kill -0 "$_pid" 2>/dev/null; then
+          					kill -USR1 "$_pid" 2>/dev/null
+          					printf '%s\n' '{"ok":true}'
+          				else
+          					printf '%s\n' '{"ok":false,"error":"Monitor tidak berjalan"}'
+          				fi
+          				;;
+          			*)
+          				printf '%s\n' '{"ok":false,"error":"Metode tidak dikenal"}'
+          				;;
+          		esac
+          		;;
+          esac
+          NT_RPCD_EOF
+
+          # 5. /usr/libexec/nettrafficd
+          cat <<'NETTRAFFICD_EOF' > package/base-files/files/usr/libexec/nettrafficd
+          #!/bin/sh
+          # nettrafd - small persistent WAN traffic monitor for LuCI.
+
+          PATH="${NETTRAFFIC_PATH:-/usr/sbin:/usr/bin:/sbin:/bin}"
+          export PATH
+
+          umask 022
+
+          STATE_DIR="${NETTRAFFIC_STATE_DIR:-/etc/nettraffic}"
+          RUN_DIR="${NETTRAFFIC_RUN_DIR:-/var/run/nettraffic}"
+          SYS_NET="${NETTRAFFIC_SYS_CLASS_NET:-/sys/class/net}"
+          UPTIME_FILE="${NETTRAFFIC_UPTIME_FILE:-/proc/uptime}"
+
+          STATE_FILE="$STATE_DIR/state"
+          DEVFILE="$RUN_DIR/devices"
+          PORTS_FILE="$RUN_DIR/ports"
+          STATUS_FILE="$RUN_DIR/status.json"
+          PIDFILE="$RUN_DIR/pid"
+          HISTFILE="$RUN_DIR/history"
+          HIST_STATE_FILE="$STATE_DIR/history"
+          IFHIST_DIR="$RUN_DIR/ifhist"
+          IFHIST_STATE_DIR="$STATE_DIR/ifhist"
+          RATES_FILE="$RUN_DIR/rates"
+          WANINFO_FILE="$RUN_DIR/waninfo"
+          SYSINFO_FILE="$RUN_DIR/system.json"
+
+          INTERVAL=2
+          SAVE_INTERVAL=60
+          HISTORY_LEN=60
+          SYSINFO_INTERVAL=10
+          CONF_IFACES=""
+          CONF_PORTS=""
+          MON_DEVS=""
+          USB_DEVS=""
+
+          log() {
+          	logger -t nettraf "$*" 2>/dev/null || true
+          }
+
+          is_uint() {
+          	case "$1" in
+          		''|*[!0-9]*) return 1 ;;
+          		*) return 0 ;;
+          	esac
+          }
+
+          is_num() {
+          	case "$1" in
+          		''|*[!0-9.]*) return 1 ;;
+          		*.*.*) return 1 ;;
+          	esac
+          	return 0
+          }
+
+          read_uptime() {
+          	UPTIME=""
+          	if [ -r "$UPTIME_FILE" ]; then
+          		read -r UPTIME _ < "$UPTIME_FILE" 2>/dev/null || true
+          	fi
+          	case "$UPTIME" in
+          		''|*[!0-9.]*) UPTIME="$(date +%s)" ;;
+          	esac
+          }
+
+          is_later_date() {
+          	[ -n "$1" ] && [ -n "$2" ] && [ "$1" != "$2" ] || return 1
+          	[ "$(printf '%s\n%s\n' "$1" "$2" | sort | tail -n 1)" = "$1" ]
+          }
+
+          is_plausible_date() {
+          	case "$1" in
+          		20[2-9][0-9]-*) return 0 ;;
+          		*) return 1 ;;
+          	esac
+          }
+
+          uci_get() {
+          	uci -q get "nettraffic.settings.$1" 2>/dev/null
+          }
+
+          load_config() {
+          	_v="$(uci_get interval)"
+          	is_uint "$_v" && [ "$_v" -ge 1 ] && [ "$_v" -le 60 ] && INTERVAL="$_v"
+
+          	_v="$(uci_get save_interval)"
+          	is_uint "$_v" && [ "$_v" -ge 15 ] && [ "$_v" -le 3600 ] && SAVE_INTERVAL="$_v"
+
+          	_v="$(uci_get history)"
+          	is_uint "$_v" && [ "$_v" -ge 20 ] && [ "$_v" -le 300 ] && HISTORY_LEN="$_v"
+
+          	_v="$(uci_get interfaces)"
+          	[ -n "$_v" ] && CONF_IFACES="$_v"
+
+          	_v="$(uci_get ports)"
+          	[ -n "$_v" ] && CONF_PORTS="$_v"
+
+          	[ -n "$NETTRAFFIC_INTERVAL" ] && INTERVAL="$NETTRAFFIC_INTERVAL"
+          	[ -n "$NETTRAFFIC_INTERFACES" ] && CONF_IFACES="$NETTRAFFIC_INTERFACES"
+          	[ -n "$NETTRAFFIC_PORTS" ] && CONF_PORTS="$NETTRAFFIC_PORTS"
+          }
+
+          add_wan() {
+          	_d="$1"
+          	[ -n "$_d" ] || return 0
+          	[ -d "$SYS_NET/$_d" ] || return 0
+          	case " $WAN_DEVS " in
+          		*" $_d "*) return 0 ;;
+          	esac
+          	WAN_DEVS="$WAN_DEVS $_d"
+          }
+
+          detect_wan() {
+          	WAN_DEVS=""
+
+          	if [ -n "$CONF_IFACES" ]; then
+          		for _d in $CONF_IFACES; do
+          			add_wan "$_d"
+          		done
+          		return 0
+          	fi
+
+          	if command -v ip >/dev/null 2>&1; then
+          		_devs="$(ip route show default 2>/dev/null | \
+          			awk '{ for (i = 1; i <= NF; i++) if ($i == "dev") { print $(i + 1); break } }')"
+          		for _d in $_devs; do
+          			add_wan "$_d"
+          		done
+          	fi
+
+          	if command -v ubus >/dev/null 2>&1; then
+          		for _if in wan wan6 wan_6 wan1 wan2 wan3 wan4 wanusb wwan wwan2; do
+          			_l3="$(ubus call "network.interface.$_if" status 2>/dev/null | \
+          				sed -n 's/.*"l3_device"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | \
+          				head -n 1)"
+          			add_wan "$_l3"
+          		done
+          	fi
+
+          	if [ -z "$WAN_DEVS" ] && command -v uci >/dev/null 2>&1; then
+          		for _if in wan wan6 wan1 wan2 wan3 wan4 wanusb wwan wwan2; do
+          			_proto="$(uci -q get "network.$_if.proto" 2>/dev/null)"
+          			if [ "$_proto" = "pppoe" ]; then
+          				add_wan pppoe-wan
+          			else
+          				_d="$(uci -q get "network.$_if.device" 2>/dev/null)"
+          				[ -n "$_d" ] || _d="$(uci -q get "network.$_if.ifname" 2>/dev/null)"
+          				add_wan "$_d"
+          			fi
+          		done
+          	fi
+          }
+
+          add_mon() {
+          	_d="$1"
+          	[ -n "$_d" ] || return 0
+          	[ -d "$SYS_NET/$_d" ] || return 0
+          	case " $MON_DEVS " in
+          		*" $_d "*) return 0 ;;
+          	esac
+          	MON_DEVS="$MON_DEVS $_d"
+          }
+
+          is_wan_dev() {
+          	case " $WAN_DEVS " in
+          		*" $1 "*) return 0 ;;
+          	esac
+          	return 1
+          }
+
+          is_usb_dev() {
+          	case " $USB_DEVS " in
+          		*" $1 "*) return 0 ;;
+          	esac
+          	return 1
+          }
+
+          detect_usb() {
+          	USB_DEVS=""
+          	for _p in "$SYS_NET"/*; do
+          		[ -d "$_p" ] || continue
+          		_d="${_p##*/}"
+          		case "$_d" in
+          			lo|phy*|wlan*|'') continue ;;
+          		esac
+          		_usb=0
+          		case "$_d" in
+          			usb*|wwan*|rndis*) _usb=1 ;;
+          		esac
+          		if [ "$_usb" = 0 ] && [ -e "$_p/device" ]; then
+          			_real="$(readlink -f "$_p/device" 2>/dev/null)"
+          			case "$_real" in
+          				*/usb*) _usb=1 ;;
+          			esac
+          		fi
+          		[ "$_usb" = 1 ] || continue
+          		USB_DEVS="$USB_DEVS $_d"
+          	done
+          	USB_DEVS="${USB_DEVS# }"
+          }
+
+          detect_monitors() {
+          	MON_DEVS=""
+          	for _n in 1 2 3 4; do
+          		add_mon "lan$_n"
+          	done
+          	for _d in $CONF_PORTS; do
+          		add_mon "$_d"
+          	done
+          	add_mon br-lan
+          	detect_usb
+          	for _d in $USB_DEVS; do
+          		add_mon "$_d"
+          	done
+          	for _d in $WAN_DEVS; do
+          		add_mon "$_d"
+          	done
+          	MON_DEVS="${MON_DEVS# }"
+          }
+
+          read_bytes() {
+          	R_RX=0
+          	R_TX=0
+          	read -r R_RX < "$SYS_NET/$1/statistics/rx_bytes" 2>/dev/null || true
+          	read -r R_TX < "$SYS_NET/$1/statistics/tx_bytes" 2>/dev/null || true
+          	is_uint "$R_RX" || R_RX=0
+          	is_uint "$R_TX" || R_TX=0
+          }
+
+          get_dev() {
+          	[ -s "$DEVFILE" ] || return 1
+          	while IFS='|' read -r _d _tr _tt _lr _lt; do
+          		[ -n "$_d" ] || continue
+          		if [ "$_d" = "$1" ]; then
+          			printf '%s %s %s %s\n' "$_tr" "$_tt" "$_lr" "$_lt"
+          			return 0
+          		fi
+          	done < "$DEVFILE"
+          	return 1
+          }
+
+          put_dev() {
+          	_tmp="$DEVFILE.$$.tmp"
+          	_found=0
+          	[ -f "$DEVFILE" ] || : > "$DEVFILE"
+          	while IFS='|' read -r _d _tr _tt _lr _lt; do
+          		[ -n "$_d" ] || continue
+          		if [ "$_d" = "$1" ]; then
+          			printf '%s|%s|%s|%s|%s\n' "$1" "$2" "$3" "$4" "$5"
+          			_found=1
+          		else
+          			printf '%s|%s|%s|%s|%s\n' "$_d" "$_tr" "$_tt" "$_lr" "$_lt"
+          		fi
+          	done < "$DEVFILE" > "$_tmp"
+          	[ "$_found" -eq 0 ] && printf '%s|%s|%s|%s|%s\n' "$1" "$2" "$3" "$4" "$5" >> "$_tmp"
+          	mv -f "$_tmp" "$DEVFILE"
+          }
+
+          sum_devices() {
+          	[ -s "$DEVFILE" ] || return 0
+          	TOTAL_RX=0
+          	TOTAL_TX=0
+          	while IFS='|' read -r _d _tr _tt _lr _lt; do
+          		[ -n "$_d" ] || continue
+          		is_wan_dev "$_d" || continue
+          		is_uint "$_tr" || _tr=0
+          		is_uint "$_tt" || _tt=0
+          		TOTAL_RX=$((TOTAL_RX + _tr))
+          		TOTAL_TX=$((TOTAL_TX + _tt))
+          	done < "$DEVFILE"
+          }
+
+          check_periods() {
+          	_day="$(date +%Y-%m-%d 2>/dev/null)"
+          	_month="${_day%-*}"
+
+          	if is_plausible_date "$_day"; then
+          		if [ -z "$DAY" ]; then
+          			DAY="$_day"
+          		elif is_later_date "$_day" "$DAY"; then
+          			DAY="$_day"
+          			DAY_RX=0
+          			DAY_TX=0
+          		fi
+          	fi
+
+          	if is_plausible_date "$_month"; then
+          		if [ -z "$MONTH" ]; then
+          			MONTH="$_month"
+          		elif is_later_date "$_month" "$MONTH"; then
+          			MONTH="$_month"
+          			MONTH_RX=0
+          			MONTH_TX=0
+          		fi
+          	fi
+          }
+
+          load_state() {
+          	[ -f "$STATE_FILE" ] || return 0
+          	[ -f "$DEVFILE" ] && : > "$DEVFILE"
+
+          	while IFS= read -r _line; do
+          		case "$_line" in
+          			total_rx=*) TOTAL_RX="${_line#*=}" ;;
+          			total_tx=*) TOTAL_TX="${_line#*=}" ;;
+          			saved_at=*) SAVED_AT="${_line#*=}" ;;
+          			day=*) DAY="${_line#*=}" ;;
+          			day_rx=*) DAY_RX="${_line#*=}" ;;
+          			day_tx=*) DAY_TX="${_line#*=}" ;;
+          			month=*) MONTH="${_line#*=}" ;;
+          			month_rx=*) MONTH_RX="${_line#*=}" ;;
+          			month_tx=*) MONTH_TX="${_line#*=}" ;;
+          			dev\|*) printf '%s\n' "${_line#dev|}" >> "$DEVFILE" ;;
+          		esac
+          	done < "$STATE_FILE"
+
+          	is_uint "$TOTAL_RX" || TOTAL_RX=0
+          	is_uint "$TOTAL_TX" || TOTAL_TX=0
+          	is_uint "$DAY_RX" || DAY_RX=0
+          	is_uint "$DAY_TX" || DAY_TX=0
+          	is_uint "$MONTH_RX" || MONTH_RX=0
+          	is_uint "$MONTH_TX" || MONTH_TX=0
+          	is_uint "$SAVED_AT" || SAVED_AT=0
+          }
+
+          save_state() {
+          	_now="$(date +%s)"
+          	_tmp="$STATE_FILE.$$.tmp"
+          	{
+          		printf 'version=1\n'
+          		printf 'saved_at=%s\n' "$_now"
+          		printf 'total_rx=%s\n' "$TOTAL_RX"
+          		printf 'total_tx=%s\n' "$TOTAL_TX"
+          		printf 'day=%s\n' "$DAY"
+          		printf 'day_rx=%s\n' "$DAY_RX"
+          		printf 'day_tx=%s\n' "$DAY_TX"
+          		printf 'month=%s\n' "$MONTH"
+          		printf 'month_rx=%s\n' "$MONTH_RX"
+          		printf 'month_tx=%s\n' "$MONTH_TX"
+          		if [ -s "$DEVFILE" ]; then
+          			while IFS='|' read -r _d _tr _tt _lr _lt; do
+          				[ -n "$_d" ] || continue
+          				printf 'dev|%s|%s|%s|%s|%s\n' "$_d" "$_tr" "$_tt" "$_lr" "$_lt"
+          			done < "$DEVFILE"
+          		fi
+          	} > "$_tmp" || {
+          		rm -f "$_tmp"
+          		return 1
+          	}
+          	mv -f "$_tmp" "$STATE_FILE" || {
+          		rm -f "$_tmp"
+          		return 1
+          	}
+          	persist_history
+          	sync 2>/dev/null || true
+          	SAVED_AT="$_now"
+          }
+
+          restore_history() {
+          	mkdir -p "$IFHIST_DIR" "$IFHIST_STATE_DIR" 2>/dev/null || true
+          	if [ -s "$HIST_STATE_FILE" ]; then
+          		tail -n "$HISTORY_LEN" "$HIST_STATE_FILE" > "$HISTFILE" 2>/dev/null || true
+          	fi
+          	for _f in "$IFHIST_STATE_DIR"/*; do
+          		[ -f "$_f" ] || continue
+          		_n="${_f##*/}"
+          		tail -n "$HISTORY_LEN" "$_f" > "$IFHIST_DIR/$_n" 2>/dev/null || true
+          	done
+          }
+
+          persist_history() {
+          	[ -f "$HISTFILE" ] || : > "$HISTFILE"
+          	_tmp="$HIST_STATE_FILE.$$.tmp"
+          	if cp -f "$HISTFILE" "$_tmp" 2>/dev/null; then
+          		mv -f "$_tmp" "$HIST_STATE_FILE" 2>/dev/null || rm -f "$_tmp"
+          	fi
+          	mkdir -p "$IFHIST_STATE_DIR" 2>/dev/null || return 0
+          	for _f in "$IFHIST_DIR"/*; do
+          		[ -f "$_f" ] || continue
+          		_n="${_f##*/}"
+          		_tmp="$IFHIST_STATE_DIR/$_n.$$.tmp"
+          		if cp -f "$_f" "$_tmp" 2>/dev/null; then
+          			mv -f "$_tmp" "$IFHIST_STATE_DIR/$_n" 2>/dev/null || rm -f "$_tmp"
+          		fi
+          	done
+          }
+
+          append_hist() {
+          	[ -n "$1" ] || return 0
+          	printf '%s %s\n' "$2" "$3" >> "$1" 2>/dev/null || return 0
+          	_tmp="$1.$$.tmp"
+          	tail -n "$HISTORY_LEN" "$1" > "$_tmp" 2>/dev/null && mv -f "$_tmp" "$1" || rm -f "$_tmp"
+          }
+
+          json_history() {
+          	[ -s "$1" ] || { printf '[]'; return 0; }
+          	awk 'BEGIN { printf "[" } { printf "%s[%s,%s]", (NR > 1 ? "," : ""), ($1 + 0), ($2 + 0) } END { printf "]" }' "$1" 2>/dev/null
+          }
+
+          port_add() {
+          	_label="$1"
+          	_dev="$2"
+          	_file="$3"
+
+          	_carrier=""
+          	_oper=""
+          	_speed=""
+          	_duplex=""
+          	read -r _carrier < "$SYS_NET/$_dev/carrier" 2>/dev/null || true
+          	read -r _oper < "$SYS_NET/$_dev/operstate" 2>/dev/null || true
+          	read -r _speed < "$SYS_NET/$_dev/speed" 2>/dev/null || true
+          	read -r _duplex < "$SYS_NET/$_dev/duplex" 2>/dev/null || true
+
+          	_up=0
+          	if [ "$_carrier" = "1" ] || [ "$_oper" = "up" ]; then
+          		_up=1
+          	fi
+          	is_uint "$_speed" || _speed=0
+          	case "$_duplex" in
+          		full|half|unknown) ;;
+          		*) _duplex="" ;;
+          	esac
+
+          	printf '%s|%s|%s|%s|%s\n' "$_label" "$_dev" "$_up" "$_speed" "$_duplex" >> "$_file"
+          }
+
+          collect_swconfig() {
+          	_file="$1"
+          	command -v swconfig >/dev/null 2>&1 || return 1
+
+          	_sw="$(swconfig list 2>/dev/null | sed -n 's/.*\(switch[0-9][0-9]*\).*/\1/p' | head -n 1)"
+          	[ -n "$_sw" ] || _sw=switch0
+          	_out="$(swconfig dev "$_sw" show 2>/dev/null)"
+          	[ -n "$_out" ] || return 1
+
+          	_info="$RUN_DIR/swports"
+          	printf '%s\n' "$_out" | awk '
+          		/^Port [0-9]+:/ { p = $2; sub(/:$/, "", p); next }
+          		/link:/ {
+          			up = ($0 ~ /link:up/) ? 1 : 0
+          			sp = 0
+          			if (match($0, /speed:[0-9]+/))
+          				sp = substr($0, RSTART + 6, RLENGTH - 6)
+          			dup = ""
+          			if ($0 ~ /full-duplex/) dup = "full"
+          			else if ($0 ~ /half-duplex/) dup = "half"
+          			if (p != "")
+          				print p "|" up "|" sp "|" dup
+          		}
+          	' > "$_info"
+
+          	_members="$(printf '%s\n' "$_out" | awk '
+          		/^VLAN 1:/ { f = 1; next }
+          		f && /ports:/ { sub(/^[ \t]*ports:[ \t]*/, ""); print; exit }
+          	')"
+          	[ -n "$_members" ] || _members="$(awk -F'|' '{ print $1 }' "$_info" | tr '\n' ' ')"
+
+          	_n=1
+          	for _p in $_members; do
+          		case "$_p" in
+          			*t) continue ;;
+          		esac
+          		_p="${_p%\*}"
+          		_line="$(awk -F'|' -v p="$_p" '$1 == p { print $2 "|" $3 "|" $4; exit }' "$_info")"
+          		[ -n "$_line" ] || continue
+          		_up="${_line%%|*}"
+          		_rest="${_line#*|}"
+          		_speed="${_rest%%|*}"
+          		_dup="${_rest#*|}"
+          		printf 'LAN %s|switch%s/%s|%s|%s|%s\n' \
+          			"$_n" "$_sw" "$_p" "$_up" "$_speed" "$_dup" >> "$_file"
+          		_n=$((_n + 1))
+          		[ "$_n" -gt 4 ] && break
+          	done
+          }
+
+          add_ports_from_list() {
+          	_list="$1"
+          	_file="$2"
+          	_n=1
+
+          	for _dev in $_list; do
+          		case "$_dev" in
+          			wan*|wlan*|phy*|bat*|mesh*|vxlan*|tun*|tap*|br-*|lo|'')
+          				continue
+          				;;
+          		esac
+          		[ -d "$SYS_NET/$_dev" ] || continue
+          		port_add "LAN $_n" "$_dev" "$_file"
+          		_n=$((_n + 1))
+          		[ "$_n" -gt 4 ] && break
+          	done
+          }
+
+          collect_named_ports() {
+          	_file="$1"
+          	_list=""
+
+          	if command -v ubus >/dev/null 2>&1; then
+          		_out="$(ubus call network.device status '{"name":"br-lan"}' 2>/dev/null)"
+          		_list="$(printf '%s\n' "$_out" | \
+          			sed -n 's/.*"bridge-members"[[:space:]]*:[[:space:]]*\[\([^]]*\)\].*/\1/p' | \
+          			tr ',' '\n' | sed 's/[][",:{}]//g')"
+          	fi
+
+          	add_ports_from_list "$_list" "$_file"
+
+          	_n="$(awk 'END { print NR }' "$_file" 2>/dev/null)"
+          	if { ! is_uint "$_n" || [ "$_n" -eq 0 ]; } && \
+          	   command -v jsonfilter >/dev/null 2>&1 && [ -r /etc/board.json ]; then
+          		_list="$(jsonfilter -i /etc/board.json -e '@.network.lan.ports[*]' 2>/dev/null)"
+          		add_ports_from_list "$_list" "$_file"
+          	fi
+          }
+
+          collect_ports() {
+          	_tmp="$PORTS_FILE.$$.tmp"
+          	: > "$_tmp"
+
+          	_count=0
+          	if [ -n "$CONF_PORTS" ]; then
+          		_n=1
+          		for _dev in $CONF_PORTS; do
+          			port_add "LAN $_n" "$_dev" "$_tmp"
+          			_n=$((_n + 1))
+          			_count=$((_count + 1))
+          		done
+          	else
+          		for _n in 1 2 3 4; do
+          			_dev="lan$_n"
+          			if [ -d "$SYS_NET/$_dev" ]; then
+          				port_add "LAN $_n" "$_dev" "$_tmp"
+          				_count=$((_count + 1))
+          			fi
+          		done
+          		if [ "$_count" -eq 0 ]; then
+          			collect_named_ports "$_tmp"
+          			_count="$(awk 'END { print NR }' "$_tmp" 2>/dev/null)"
+          			is_uint "$_count" || _count=0
+          		fi
+          		if [ "$_count" -eq 0 ]; then
+          			collect_swconfig "$_tmp"
+          		fi
+          	fi
+
+          	mv -f "$_tmp" "$PORTS_FILE"
+          }
+
+          get_rate() {
+          	[ -s "$RATES_FILE" ] || { printf '0 0\n'; return 0; }
+          	while IFS='|' read -r _rd _rr _rt; do
+          		[ -n "$_rd" ] || continue
+          		if [ "$_rd" = "$1" ]; then
+          			is_num "$_rr" || _rr=0
+          			is_num "$_rt" || _rt=0
+          			printf '%s %s\n' "$_rr" "$_rt"
+          			return 0
+          		fi
+          	done < "$RATES_FILE"
+          	printf '0 0\n'
+          }
+
+          collect_wan_info() {
+          	_tmp="$WANINFO_FILE.$$.tmp"
+          	: > "$_tmp"
+          	if command -v ip >/dev/null 2>&1; then
+          		ip route show default 2>/dev/null | awk '
+          			{
+          				dev = ""; gw = ""; met = 9999
+          				for (i = 1; i <= NF; i++) {
+          					if ($i == "via") gw = $(i + 1)
+          					else if ($i == "dev") dev = $(i + 1)
+          					else if ($i == "metric") met = $(i + 1)
+          				}
+          				if (dev == "") next
+          				if (met !~ /^[0-9]+$/) met = 9999
+          				if (!(dev in best) || met + 0 < best[dev] + 0) {
+          					best[dev] = met
+          					gwf[dev] = gw
+          				}
+          			}
+          			END {
+          				for (d in best)
+          					printf "%s|%s|%s\n", d, gwf[d], best[d]
+          			}
+          		' > "$_tmp"
+          	fi
+          	mv -f "$_tmp" "$WANINFO_FILE"
+          }
+
+          collect_system() {
+          	_load1=0; _load5=0; _load15=0
+          	if [ -r /proc/loadavg ]; then
+          		read -r _load1 _load5 _load15 _rest < /proc/loadavg 2>/dev/null || true
+          	fi
+          	is_num "$_load1" || _load1=0
+          	is_num "$_load5" || _load5=0
+          	is_num "$_load15" || _load15=0
+
+          	_mem_total=0; _mem_avail=0; _mem_free=0; _mem_buff=0; _mem_cache=0
+          	if [ -r /proc/meminfo ]; then
+          		while read -r _k _v _u; do
+          			case "$_k" in
+          				MemTotal:) _mem_total="$_v" ;;
+          				MemAvailable:) _mem_avail="$_v" ;;
+          				MemFree:) _mem_free="$_v" ;;
+          				Buffers:) _mem_buff="$_v" ;;
+          				Cached:) _mem_cache="$_v" ;;
+          			esac
+          		done < /proc/meminfo
+          	fi
+          	is_uint "$_mem_total" || _mem_total=0
+          	is_uint "$_mem_avail" || _mem_avail=0
+          	if [ "$_mem_avail" -eq 0 ]; then
+          		is_uint "$_mem_free" || _mem_free=0
+          		is_uint "$_mem_buff" || _mem_buff=0
+          		is_uint "$_mem_cache" || _mem_cache=0
+          		_mem_avail=$((_mem_free + _mem_buff + _mem_cache))
+          	fi
+          	_mem_used=$((_mem_total - _mem_avail))
+          	[ "$_mem_used" -lt 0 ] && _mem_used=0
+          	_mem_pct=0
+          	[ "$_mem_total" -gt 0 ] && _mem_pct=$((_mem_used * 100 / _mem_total))
+
+          	_temp=""
+          	for _f in /sys/class/thermal/thermal_zone*/temp /sys/class/hwmon/hwmon*/temp1_input; do
+          		[ -r "$_f" ] || continue
+          		read -r _v < "$_f" 2>/dev/null || continue
+          		is_uint "$_v" || continue
+          		[ "$_v" -gt 0 ] || continue
+          		_temp="$_v"
+          		break
+          	done
+          	_temp_c="null"
+          	if is_uint "$_temp"; then
+          		if [ "$_temp" -ge 1000 ]; then
+          			_temp_c="$(awk -v v="$_temp" 'BEGIN { printf "%.1f", v / 1000 }')"
+          		else
+          			_temp_c="$_temp"
+          		fi
+          	fi
+
+          	_flash_line="$(df -k /overlay 2>/dev/null | awk 'NR == 2 { gsub(/%/, "", $5); print $2, $3, $4, $5 }')"
+          	[ -n "$_flash_line" ] || \
+          		_flash_line="$(df -k / 2>/dev/null | awk 'NR == 2 { gsub(/%/, "", $5); print $2, $3, $4, $5 }')"
+          	_flash_total=0; _flash_used=0; _flash_pct=0
+          	set -- $_flash_line
+          	[ -n "$1" ] && _flash_total="$1"
+          	[ -n "$2" ] && _flash_used="$2"
+          	[ -n "$4" ] && _flash_pct="$4"
+          	is_uint "$_flash_total" || _flash_total=0
+          	is_uint "$_flash_used" || _flash_used=0
+          	is_uint "$_flash_pct" || _flash_pct=0
+
+          	_wifi_clients=0
+          	_wifi_ifaces=""
+          	_wifi_available=false
+          	if command -v iw >/dev/null 2>&1; then
+          		_wifi_available=true
+          		for _w in $(iw dev 2>/dev/null | awk '/Interface/ { print $2 }'); do
+          			_c="$(iw dev "$_w" station dump 2>/dev/null | grep -c '^Station')"
+          			is_uint "$_c" || _c=0
+          			_wifi_clients=$((_wifi_clients + _c))
+          			[ -n "$_wifi_ifaces" ] && _wifi_ifaces="$_wifi_ifaces, "
+          			_wifi_ifaces="$_wifi_ifaces\"$_w\""
+          		done
+          	fi
+
+          	_tmp="$SYSINFO_FILE.$$.tmp"
+          	printf '{"load": [%s, %s, %s], "mem_total_kb": %s, "mem_used_kb": %s, "mem_percent": %s, "temp_c": %s, "flash_total_kb": %s, "flash_used_kb": %s, "flash_percent": %s, "wifi_clients": %s, "wifi_available": %s, "wifi_ifaces": [%s]}\n' \
+          		"$_load1" "$_load5" "$_load15" \
+          		"$_mem_total" "$_mem_used" "$_mem_pct" \
+          		"$_temp_c" \
+          		"$_flash_total" "$_flash_used" "$_flash_pct" \
+          		"$_wifi_clients" "$_wifi_available" "$_wifi_ifaces" > "$_tmp" || {
+          		rm -f "$_tmp"
+          		return 1
+          	}
+          	mv -f "$_tmp" "$SYSINFO_FILE"
+          }
+
+          write_status() {
+          	_rx_rate="$1"
+          	_tx_rate="$2"
+          	_now="$(date +%s)"
+          	read_uptime
+          	_uptime="${UPTIME%%.*}"
+
+          	_wan_list=""
+          	for _d in $WAN_DEVS; do
+          		[ -n "$_wan_list" ] && _wan_list="$_wan_list,"
+          		_wan_list="$_wan_list\"$_d\""
+          	done
+
+          	_wan_ok=false
+          	[ -n "$WAN_DEVS" ] && _wan_ok=true
+
+          	_ports=""
+          	if [ -s "$PORTS_FILE" ]; then
+          		while IFS='|' read -r _label _dev _up _speed _duplex; do
+          			[ -n "$_label" ] || continue
+          			[ -n "$_ports" ] && _ports="$_ports,"
+          			if [ "$_up" = "1" ]; then
+          				_up_json=true
+          			else
+          				_up_json=false
+          			fi
+          			is_uint "$_speed" || _speed=0
+          			_ports="$_ports{\"label\":\"$_label\",\"device\":\"$_dev\",\"up\":$_up_json,\"speed\":$_speed,\"duplex\":\"$_duplex\"}"
+          		done < "$PORTS_FILE"
+          	fi
+
+          	_min_metric=999999
+          	if [ -s "$WANINFO_FILE" ]; then
+          		while IFS='|' read -r _wd _wg _wm; do
+          			case " $WAN_DEVS " in
+          				*" $_wd "*) ;;
+          				*) continue ;;
+          			esac
+          			is_uint "$_wm" || continue
+          			[ "$_wm" -lt "$_min_metric" ] && _min_metric="$_wm"
+          		done < "$WANINFO_FILE"
+          	fi
+
+          	_uplinks=""
+          	for _d in $WAN_DEVS; do
+          		_carrier=""; _oper=""; _speed=""; _duplex=""
+          		read -r _carrier < "$SYS_NET/$_d/carrier" 2>/dev/null || true
+          		read -r _oper < "$SYS_NET/$_d/operstate" 2>/dev/null || true
+          		read -r _speed < "$SYS_NET/$_d/speed" 2>/dev/null || true
+          		read -r _duplex < "$SYS_NET/$_d/duplex" 2>/dev/null || true
+
+          		_up_json=false
+          		if [ "$_carrier" = "1" ] || [ "$_oper" = "up" ]; then
+          			_up_json=true
+          		fi
+          		is_uint "$_speed" || _speed=0
+          		case "$_duplex" in
+          			full|half|unknown) ;;
+          			*) _duplex="" ;;
+          		esac
+
+          		_addr=""
+          		if command -v ip >/dev/null 2>&1; then
+          			_addr="$(ip addr show dev "$_d" 2>/dev/null | \
+          				awk '/inet / { print $2; exit }')"
+          		fi
+
+          		_gw=""; _metric=0
+          		if [ -s "$WANINFO_FILE" ]; then
+          			while IFS='|' read -r _wd _wg _wm; do
+          				if [ "$_wd" = "$_d" ]; then
+          					_gw="$_wg"
+          					_metric="$_wm"
+          					break
+          				fi
+          			done < "$WANINFO_FILE"
+          		fi
+          		is_uint "$_metric" || _metric=0
+
+          		_active=false
+          		if [ "$_metric" -gt 0 ] && [ "$_metric" -lt 9999 ] && \
+          		   [ "$_metric" -eq "$_min_metric" ]; then
+          			_active=true
+          		fi
+
+          		_tr=0; _tt=0
+          		_st="$(get_dev "$_d")"
+          		if [ -n "$_st" ]; then
+          			set -- $_st
+          			_tr="$1"
+          			_tt="$2"
+          			is_uint "$_tr" || _tr=0
+          			is_uint "$_tt" || _tt=0
+          		fi
+
+          		_rr=0; _rt=0
+          		_rs="$(get_rate "$_d")"
+          		if [ -n "$_rs" ]; then
+          			set -- $_rs
+          			_rr="$1"
+          			_rt="$2"
+          			is_num "$_rr" || _rr=0
+          			is_num "$_rt" || _rt=0
+          		fi
+
+          		[ -n "$_uplinks" ] && _uplinks="$_uplinks,"
+          		_uplinks="$_uplinks{\"device\":\"$_d\",\"up\":$_up_json,\"speed\":$_speed,\"duplex\":\"$_duplex\",\"address\":\"$_addr\",\"gateway\":\"$_gw\",\"metric\":$_metric,\"active\":$_active,\"rx_rate\":$_rr,\"tx_rate\":$_rt,\"rx_total\":$_tr,\"tx_total\":$_tt}"
+          	done
+
+          	_usb_found=false
+          	[ -n "$USB_DEVS" ] && _usb_found=true
+
+          	_iface_cards=""
+          	for _d in $MON_DEVS; do
+          		_carrier=""; _oper=""; _speed=""; _duplex=""
+          		read -r _carrier < "$SYS_NET/$_d/carrier" 2>/dev/null || true
+          		read -r _oper < "$SYS_NET/$_d/operstate" 2>/dev/null || true
+          		read -r _speed < "$SYS_NET/$_d/speed" 2>/dev/null || true
+          		read -r _duplex < "$SYS_NET/$_d/duplex" 2>/dev/null || true
+
+          		_up_json=false
+          		if [ "$_carrier" = "1" ] || [ "$_oper" = "up" ]; then
+          			_up_json=true
+          		fi
+          		is_uint "$_speed" || _speed=0
+          		case "$_duplex" in
+          			full|half|unknown) ;;
+          			*) _duplex="" ;;
+          		esac
+
+          		_label=""
+          		_kind="other"
+          		case "$_d" in
+          			lan1) _label="LAN 1"; _kind="lan" ;;
+          			lan2) _label="LAN 2"; _kind="lan" ;;
+          			lan3) _label="LAN 3"; _kind="lan" ;;
+          			lan4) _label="LAN 4"; _kind="lan" ;;
+          			br-lan) _label="br-lan"; _kind="bridge" ;;
+          			usb*) _label="USB"; _kind="usb" ;;
+          			wwan*) _label="USB Modem"; _kind="usb" ;;
+          			wan) _label="WAN"; _kind="wan" ;;
+          			pppoe-wan) _label="WAN PPPoE"; _kind="wan" ;;
+          			*) _label="$_d"; _kind="other" ;;
+          		esac
+          		if is_usb_dev "$_d"; then
+          			_kind="usb"
+          			[ -n "$_label" ] || _label="USB"
+          		fi
+          		_wan_json=false
+          		if is_wan_dev "$_d"; then
+          			_wan_json=true
+          			case "$_kind" in
+          				other) _kind="wan" ;;
+          			esac
+          		fi
+
+          		_tr=0; _tt=0
+          		_st="$(get_dev "$_d")"
+          		if [ -n "$_st" ]; then
+          			set -- $_st
+          			_tr="$1"
+          			_tt="$2"
+          			is_uint "$_tr" || _tr=0
+          			is_uint "$_tt" || _tt=0
+          		fi
+
+          		_rr=0; _rt=0
+          		_rs="$(get_rate "$_d")"
+          		if [ -n "$_rs" ]; then
+          			set -- $_rs
+          			_rr="$1"
+          			_rt="$2"
+          			is_num "$_rr" || _rr=0
+          			is_num "$_rt" || _rt=0
+          		fi
+
+          		_ih="$(json_history "$IFHIST_DIR/$_d")"
+          		[ -n "$_ih" ] || _ih="[]"
+
+          		[ -n "$_iface_cards" ] && _iface_cards="$_iface_cards,"
+          		_iface_cards="$_iface_cards{\"device\":\"$_d\",\"label\":\"$_label\",\"kind\":\"$_kind\",\"wan\":$_wan_json,\"up\":$_up_json,\"speed\":$_speed,\"duplex\":\"$_duplex\",\"rx_rate\":$_rr,\"tx_rate\":$_rt,\"rx_total\":$_tr,\"tx_total\":$_tt,\"history\":$_ih}"
+          	done
+
+          	_hist="$(awk 'BEGIN { printf "[" } { printf "%s[%s,%s]", (NR > 1 ? "," : ""), $1, $2 } END { printf "]" }' "$HISTFILE" 2>/dev/null)"
+          	[ -n "$_hist" ] || _hist="[]"
+
+          	_tmp="$STATUS_FILE.$$.tmp"
+          	{
+          		printf '{\n'
+          		printf '  "ok": true,\n'
+          		printf '  "version": 1,\n'
+          		printf '  "time": %s,\n' "$_now"
+          		printf '  "uptime": %s,\n' "${_uptime:-0}"
+          		printf '  "wan_detected": %s,\n' "$_wan_ok"
+          		printf '  "interfaces": [%s],\n' "$_wan_list"
+          		printf '  "usb_found": %s,\n' "$_usb_found"
+          		printf '  "ifaces": [%s],\n' "$_iface_cards"
+          		printf '  "uplinks": [%s],\n' "$_uplinks"
+          		printf '  "rx_rate": %s,\n' "$_rx_rate"
+          		printf '  "tx_rate": %s,\n' "$_tx_rate"
+          		printf '  "rx_total": %s,\n' "$TOTAL_RX"
+          		printf '  "tx_total": %s,\n' "$TOTAL_TX"
+          		printf '  "day": "%s",\n' "$DAY"
+          		printf '  "day_rx": %s,\n' "$DAY_RX"
+          		printf '  "day_tx": %s,\n' "$DAY_TX"
+          		printf '  "month": "%s",\n' "$MONTH"
+          		printf '  "month_rx": %s,\n' "$MONTH_RX"
+          		printf '  "month_tx": %s,\n' "$MONTH_TX"
+          		printf '  "interval": %s,\n' "$INTERVAL"
+          		printf '  "save_interval": %s,\n' "$SAVE_INTERVAL"
+          		printf '  "saved_at": %s,\n' "${SAVED_AT:-0}"
+          		printf '  "ports": [%s],\n' "$_ports"
+          		printf '  "system": '
+          		if [ -s "$SYSINFO_FILE" ]; then
+          			cat "$SYSINFO_FILE"
+          		else
+          			printf 'null\n'
+          		fi
+          		printf ',\n'
+          		printf '  "history": %s\n' "$_hist"
+          		printf '}\n'
+          	} > "$_tmp" || {
+          		rm -f "$_tmp"
+          		return 1
+          	}
+          	mv -f "$_tmp" "$STATUS_FILE"
+          }
+
+          reset_counters() {
+          	: > "$DEVFILE"
+          	for _d in $MON_DEVS; do
+          		read_bytes "$_d"
+          		put_dev "$_d" 0 0 "$R_RX" "$R_TX"
+          	done
+          	TOTAL_RX=0
+          	TOTAL_TX=0
+          	DAY_RX=0
+          	DAY_TX=0
+          	MONTH_RX=0
+          	MONTH_TX=0
+          	: > "$HISTFILE"
+          	rm -rf "$IFHIST_DIR" "$IFHIST_STATE_DIR" 2>/dev/null || true
+          	mkdir -p "$IFHIST_DIR" "$IFHIST_STATE_DIR" 2>/dev/null || true
+          	save_state
+          	log "counters reset"
+          }
+
+          load_config
+
+          mkdir -p "$STATE_DIR" "$RUN_DIR" || exit 1
+          echo $$ > "$PIDFILE"
+          : > "$DEVFILE"
+          : > "$HISTFILE"
+          : > "$RATES_FILE"
+          mkdir -p "$IFHIST_DIR" "$IFHIST_STATE_DIR" 2>/dev/null || true
+
+          TOTAL_RX=0
+          TOTAL_TX=0
+          DAY=""
+          MONTH=""
+          DAY_RX=0
+          DAY_TX=0
+          MONTH_RX=0
+          MONTH_TX=0
+          SAVED_AT=0
+
+          load_state
+          sum_devices
+          check_periods
+
+          WAN_DEVS=""
+          MON_DEVS=""
+          USB_DEVS=""
+          LAST_TIME=""
+          LAST_DETECT=0
+          LAST_DATE_CHECK=0
+          LAST_SAVE_INT=0
+          LAST_SYSINFO=0
+          RESET_REQUESTED=0
+          STOP_REQUESTED=0
+
+          trap 'STOP_REQUESTED=1' TERM INT
+          trap 'RESET_REQUESTED=1' USR1
+
+          detect_wan
+          detect_monitors
+          restore_history
+          collect_system
+          collect_wan_info
+
+          log "started (interval=${INTERVAL}s, save=${SAVE_INTERVAL}s)"
+
+          while [ "$STOP_REQUESTED" = 0 ]; do
+          	read_uptime
+          	_uptime="$UPTIME"
+          	_uptime_int="${_uptime%%.*}"
+          	is_uint "$_uptime_int" || _uptime_int=0
+
+          	if [ -z "$WAN_DEVS" ] || [ $((_uptime_int - LAST_DETECT)) -ge 15 ]; then
+          		detect_wan
+          		detect_monitors
+          		collect_wan_info
+          		LAST_DETECT="$_uptime_int"
+          	fi
+
+          	if [ "$RESET_REQUESTED" = 1 ]; then
+          		reset_counters
+          		RESET_REQUESTED=0
+          		LAST_TIME=""
+          	fi
+
+          	if [ $((_uptime_int - LAST_DATE_CHECK)) -ge 30 ]; then
+          		check_periods
+          		LAST_DATE_CHECK="$_uptime_int"
+          	fi
+
+          	_elapsed=0
+          	if [ -n "$LAST_TIME" ]; then
+          		_elapsed="$(awk -v a="$_uptime" -v b="$LAST_TIME" 'BEGIN { d = a - b; if (d < 0) d = 0; printf "%.3f", d }')"
+          	fi
+
+          	SAMPLE_RX=0
+          	SAMPLE_TX=0
+          	_rates_tmp="$RATES_FILE.$$.tmp"
+          	: > "$_rates_tmp"
+
+          	for _mon in $MON_DEVS; do
+          		read_bytes "$_mon"
+
+          		_state="$(get_dev "$_mon")"
+          		if [ -n "$_state" ]; then
+          			set -- $_state
+          			_tr="$1"
+          			_tt="$2"
+          			_lr="$3"
+          			_lt="$4"
+          			is_uint "$_tr" || _tr=0
+          			is_uint "$_tt" || _tt=0
+          			is_uint "$_lr" || _lr=0
+          			is_uint "$_lt" || _lt=0
+
+          			if [ "$R_RX" -ge "$_lr" ]; then
+          				_dr=$((R_RX - _lr))
+          			else
+          				_dr=$R_RX
+          			fi
+          			if [ "$R_TX" -ge "$_lt" ]; then
+          				_dt=$((R_TX - _lt))
+          			else
+          				_dt=$R_TX
+          			fi
+          		else
+          			_tr=0
+          			_tt=0
+          			_dr=0
+          			_dt=0
+          		fi
+
+          		_tr=$((_tr + _dr))
+          		_tt=$((_tt + _dt))
+          		put_dev "$_mon" "$_tr" "$_tt" "$R_RX" "$R_TX"
+
+          		if [ "$_elapsed" = "0" ] || [ "$_elapsed" = "0.000" ]; then
+          			_prx=0
+          			_ptx=0
+          		else
+          			_prx="$(awk -v d="$_dr" -v t="$_elapsed" 'BEGIN { if (t > 0) printf "%.2f", d / t; else print "0.00" }')"
+          			_ptx="$(awk -v d="$_dt" -v t="$_elapsed" 'BEGIN { if (t > 0) printf "%.2f", d / t; else print "0.00" }')"
+          		fi
+          		printf '%s|%s|%s\n' "$_mon" "$_prx" "$_ptx" >> "$_rates_tmp"
+          		append_hist "$IFHIST_DIR/$_mon" "$_prx" "$_ptx"
+
+          		if is_wan_dev "$_mon"; then
+          			SAMPLE_RX=$((SAMPLE_RX + _dr))
+          			SAMPLE_TX=$((SAMPLE_TX + _dt))
+          		fi
+          	done
+          	mv -f "$_rates_tmp" "$RATES_FILE"
+
+          	sum_devices
+
+          	if [ "$_elapsed" = "0" ] || [ "$_elapsed" = "0.000" ]; then
+          		_rx_rate="0.00"
+          		_tx_rate="0.00"
+          	else
+          		_rx_rate="$(awk -v d="$SAMPLE_RX" -v t="$_elapsed" 'BEGIN { if (t > 0) printf "%.2f", d / t; else print "0.00" }')"
+          		_tx_rate="$(awk -v d="$SAMPLE_TX" -v t="$_elapsed" 'BEGIN { if (t > 0) printf "%.2f", d / t; else print "0.00" }')"
+          	fi
+
+          	DAY_RX=$((DAY_RX + SAMPLE_RX))
+          	DAY_TX=$((DAY_TX + SAMPLE_TX))
+          	MONTH_RX=$((MONTH_RX + SAMPLE_RX))
+          	MONTH_TX=$((MONTH_TX + SAMPLE_TX))
+
+          	LAST_TIME="$_uptime"
+
+          	printf '%s %s\n' "$_rx_rate" "$_tx_rate" >> "$HISTFILE"
+          	tail -n "$HISTORY_LEN" "$HISTFILE" > "$HISTFILE.tmp" 2>/dev/null && mv -f "$HISTFILE.tmp" "$HISTFILE"
+
+          	if [ $((_uptime_int - LAST_SYSINFO)) -ge "$SYSINFO_INTERVAL" ]; then
+          		collect_system
+          		LAST_SYSINFO="$_uptime_int"
+          	fi
+
+          	collect_ports
+          	write_status "$_rx_rate" "$_tx_rate"
+
+          	if [ $((_uptime_int - LAST_SAVE_INT)) -ge "$SAVE_INTERVAL" ]; then
+          		save_state
+          		LAST_SAVE_INT="$_uptime_int"
+          	fi
+
+          	_sleep_left="$INTERVAL"
+          	while [ "$_sleep_left" -gt 0 ] && [ "$STOP_REQUESTED" = 0 ]; do
+          		sleep 1
+          		_sleep_left=$((_sleep_left - 1))
+          	done
+          done
+
+          save_state
+          rm -f "$PIDFILE"
+          log "stopped"
+          exit 0
+          NETTRAFFICD_EOF
+
+          # 6. /usr/share/luci/menu.d/luci-app-nettraffic.json
+          cat <<'NT_MENU_EOF' > package/base-files/files/usr/share/luci/menu.d/luci-app-nettraffic.json
+          {
+          	"admin/services/nettraffic": {
+          		"title": "Traffic Monitor",
+          		"order": 60,
+          		"action": {
+          			"type": "view",
+          			"path": "nettraffic/overview"
+          		},
+          		"depends": {
+          			"acl": [ "luci-app-nettraffic" ]
+          		}
+          	}
+          }
+          NT_MENU_EOF
+
+          # 7. /usr/share/rpcd/acl.d/luci-app-nettraffic.json
+          cat <<'NT_ACL_EOF' > package/base-files/files/usr/share/rpcd/acl.d/luci-app-nettraffic.json
+          {
+          	"luci-app-nettraffic": {
+          		"description": "Grant access to Network Traffic monitor",
+          		"read": {
+          			"ubus": {
+          				"nettraffic": [ "status" ]
+          			}
+          		},
+          		"write": {
+          			"ubus": {
+          				"nettraffic": [ "reset" ]
+          			}
+          		}
+          	}
+          }
+          NT_ACL_EOF
+
+          # 8. /www/luci-static/resources/view/nettraffic/overview.js
+          cat <<'NETTRAFFIC_JS_EOF' > package/base-files/files/www/luci-static/resources/view/nettraffic/overview.js
+          'use strict';
+          'require view';
+          'require rpc';
+          'require poll';
+          'require ui';
+
+          var callStatus = rpc.declare({
+          	object: 'nettraffic',
+          	method: 'status',
+          	expect: { '': {} }
+          });
+
+          var callReset = rpc.declare({
+          	object: 'nettraffic',
+          	method: 'reset',
+          	expect: { '': {} }
+          });
+
+          var THEME_KEY = 'nettraffic.theme';
+
+          var THEMES = [
+          	{ id: 'emerald', name: 'Emerald', rx: '#22c55e', tx: '#3b82f6', accent: '#10b981' },
+          	{ id: 'ocean', name: 'Ocean', rx: '#06b6d4', tx: '#6366f1', accent: '#0891b2' },
+          	{ id: 'sunset', name: 'Sunset', rx: '#f97316', tx: '#ec4899', accent: '#ea580c' },
+          	{ id: 'violet', name: 'Violet', rx: '#a855f7', tx: '#f43f5e', accent: '#8b5cf6' },
+          	{ id: 'neon', name: 'Neon', rx: '#84cc16', tx: '#14b8a6', accent: '#65a30d' }
+          ];
+
+          var CSS = [
+          	'.nt-page { padding-bottom: 24px; --nt-rx: #22c55e; --nt-tx: #3b82f6; --nt-accent: #10b981; --nt-accent-soft: rgba(16, 185, 129, .15); }',
+          	'.nt-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin: 0 0 18px; }',
+          	'.nt-title { margin: 0; font-size: 1.55rem; line-height: 1.2; }',
+          	'.nt-sub { margin: 4px 0 0; color: var(--text-color-low, #777); font-size: .875rem; }',
+          	'.nt-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }',
+          	'.nt-btn { display: inline-flex; align-items: center; gap: 7px; padding: 7px 12px; border: 1px solid var(--border-color, #ddd); border-radius: 9px; background: var(--background-color-high, #fff); color: var(--text-color, #222); font-size: .8rem; font-weight: 600; line-height: 1.2; cursor: pointer; white-space: nowrap; }',
+          	'.nt-btn:hover { border-color: var(--nt-accent); }',
+          	'.nt-btn:disabled { opacity: .55; cursor: default; }',
+          	'.nt-btn-reset { color: #dc2626; }',
+          	'.nt-theme-dot { flex: 0 0 auto; width: 12px; height: 12px; border-radius: 50%; background: var(--nt-accent); box-shadow: 0 0 0 3px var(--nt-accent-soft); }',
+          	'.nt-live { display: inline-flex; align-items: center; gap: 8px; padding: 7px 12px; border: 1px solid var(--border-color, #ddd); border-radius: 999px; background: var(--background-color-high, #fff); color: var(--text-color-low, #777); font-size: .8rem; white-space: nowrap; }',
+          	'.nt-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--nt-accent); box-shadow: 0 0 0 4px var(--nt-accent-soft); }',
+          	'.nt-live.offline .nt-dot { background: #ef4444; box-shadow: 0 0 0 4px rgba(239, 68, 68, .14); }',
+          	'.nt-warning { display: flex; gap: 10px; align-items: flex-start; margin: 0 0 18px; padding: 12px 14px; border: 1px solid rgba(245, 158, 11, .45); border-radius: 10px; background: rgba(245, 158, 11, .10); color: var(--text-color, #222); font-size: .88rem; }',
+          	'.nt-warning[hidden] { display: none !important; }',
+          	'.nt-warning-icon { flex: 0 0 auto; font-weight: 700; color: #d97706; }',
+          	'.nt-grid-rate { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }',
+          	'.nt-grid-usage { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-top: 16px; }',
+          	'.nt-card { position: relative; overflow: hidden; border: 1px solid var(--border-color, #ddd); border-radius: 14px; background: var(--background-color-high, #fff); color: var(--text-color, #222); box-shadow: 0 1px 2px rgba(0,0,0,.03); }',
+          	'.nt-rate { display: flex; gap: 16px; align-items: center; padding: 20px; }',
+          	'.nt-rate::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 4px; background: currentColor; opacity: .85; }',
+          	'.nt-rate.down { color: var(--nt-rx); }',
+          	'.nt-rate.up { color: var(--nt-tx); }',
+          	'.nt-rate-icon { display: grid; place-items: center; flex: 0 0 auto; width: 52px; height: 52px; border-radius: 14px; background: currentColor; color: #fff; font-size: 1.7rem; font-weight: 700; line-height: 1; }',
+          	'.nt-rate-body { min-width: 0; }',
+          	'.nt-rate-label { color: var(--text-color-low, #777); font-size: .8rem; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }',
+          	'.nt-rate-value { margin-top: 2px; color: var(--text-color, #222); font-size: clamp(1.65rem, 3.4vw, 2.35rem); font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.15; white-space: nowrap; }',
+          	'.nt-rate-foot { margin-top: 4px; color: var(--text-color-low, #777); font-size: .78rem; }',
+          	'.nt-usage { padding: 16px 18px; }',
+          	'.nt-usage-label { color: var(--text-color-low, #777); font-size: .78rem; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }',
+          	'.nt-usage-value { margin-top: 4px; font-size: 1.45rem; font-weight: 700; font-variant-numeric: tabular-nums; }',
+          	'.nt-usage-split { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 8px; color: var(--text-color-low, #777); font-size: .8rem; }',
+          	'.nt-usage-split b { color: var(--text-color, #222); font-weight: 600; }',
+          	'.nt-usage-split .rx { color: var(--nt-rx); }',
+          	'.nt-usage-split .tx { color: var(--nt-tx); }',
+          	'.nt-section { margin-top: 24px; }',
+          	'.nt-section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 10px; }',
+          	'.nt-section-head h3 { margin: 0; font-size: 1.05rem; }',
+          	'.nt-section-note { color: var(--text-color-low, #777); font-size: .78rem; }',
+          	'.nt-uplinks { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }',
+          	'.nt-uplink { padding: 14px 16px; border: 1px solid var(--border-color, #ddd); border-radius: 12px; background: var(--background-color-high, #fff); }',
+          	'.nt-uplink.active { border-color: var(--nt-accent); }',
+          	'.nt-uplink.down { opacity: .72; }',
+          	'.nt-uplink-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }',
+          	'.nt-uplink-name { font-family: monospace; font-size: 1.05rem; font-weight: 700; }',
+          	'.nt-uplink-badge { padding: 3px 8px; border-radius: 999px; background: rgba(148, 163, 184, .16); color: var(--text-color-low, #777); font-size: .64rem; font-weight: 700; letter-spacing: .06em; }',
+          	'.nt-uplink.active .nt-uplink-badge { background: var(--nt-accent-soft); color: var(--nt-accent); }',
+          	'.nt-uplink-state { display: flex; align-items: center; gap: 6px; margin-top: 6px; color: var(--text-color-low, #777); font-size: .76rem; }',
+          	'.nt-uplink-state .nt-led { position: static; flex: 0 0 auto; background: #9ca3af; box-shadow: none; }',
+          	'.nt-uplink.up .nt-uplink-state .nt-led { background: var(--nt-accent); box-shadow: 0 0 0 3px var(--nt-accent-soft); }',
+          	'.nt-uplink-rows { display: grid; gap: 3px; margin-top: 10px; font-size: .75rem; }',
+          	'.nt-uplink-rows div { display: flex; justify-content: space-between; gap: 10px; }',
+          	'.nt-uplink-rows span { color: var(--text-color-low, #777); }',
+          	'.nt-uplink-rows b { overflow: hidden; font-family: monospace; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }',
+          	'.nt-uplink-traffic { display: flex; gap: 14px; margin-top: 10px; padding-top: 9px; border-top: 1px dashed var(--border-color, #ddd); font-size: .85rem; }',
+          	'.nt-uplink-traffic .rx { color: var(--nt-rx); }',
+          	'.nt-uplink-traffic .tx { color: var(--nt-tx); }',
+          	'.nt-uplink-total { margin-top: 5px; color: var(--text-color-low, #777); font-size: .72rem; }',
+          	'.nt-sys { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; }',
+          	'.nt-sys-item { padding: 12px 14px; border: 1px solid var(--border-color, #ddd); border-radius: 12px; background: var(--background-color-high, #fff); }',
+          	'.nt-sys-label { color: var(--text-color-low, #777); font-size: .68rem; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }',
+          	'.nt-sys-value { margin-top: 3px; font-size: 1.2rem; font-weight: 700; font-variant-numeric: tabular-nums; }',
+          	'.nt-sys-sub { margin-top: 2px; overflow: hidden; color: var(--text-color-low, #777); font-size: .7rem; text-overflow: ellipsis; white-space: nowrap; }',
+          	'.nt-ifgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 12px; }',
+          	'.nt-ifcard { position: relative; min-width: 0; padding: 12px 13px 11px; border: 1px solid var(--border-color, #ddd); border-top: 3px solid var(--nt-accent); border-radius: 12px; background: var(--background-color-high, #fff); }',
+          	'.nt-ifcard.down { border-top-color: #9ca3af; opacity: .82; }',
+          	'.nt-ifcard.placeholder { border-style: dashed; border-top-color: #9ca3af; opacity: .78; }',
+          	'.nt-if-head { display: flex; align-items: center; gap: 7px; min-width: 0; }',
+          	'.nt-if-dot { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; background: #9ca3af; }',
+          	'.nt-ifcard:not(.down):not(.placeholder) .nt-if-dot { background: var(--nt-accent); box-shadow: 0 0 0 3px var(--nt-accent-soft); }',
+          	'.nt-if-name { font-weight: 700; font-size: .92rem; white-space: nowrap; }',
+          	'.nt-if-dev { overflow: hidden; color: var(--text-color-low, #777); font-family: monospace; font-size: .68rem; text-overflow: ellipsis; white-space: nowrap; }',
+          	'.nt-if-badges { display: flex; flex: 0 0 auto; gap: 4px; margin-left: auto; }',
+          	'.nt-badge { padding: 2px 6px; border-radius: 999px; background: var(--nt-accent-soft); color: var(--nt-accent); font-size: .6rem; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; }',
+          	'.nt-badge.wan { background: rgba(148, 163, 184, .18); color: var(--text-color-low, #777); }',
+          	'.nt-if-rates { display: flex; gap: 14px; margin-top: 8px; font-size: .8rem; font-variant-numeric: tabular-nums; }',
+          	'.nt-if-rates .rx { color: var(--nt-rx); }',
+          	'.nt-if-rates .tx { color: var(--nt-tx); }',
+          	'.nt-if-chartwrap { position: relative; margin-top: 6px; }',
+          	'.nt-if-chart { display: block; width: 100%; height: 82px; }',
+          	'.nt-if-nochart { position: absolute; inset: 0; display: grid; place-items: center; color: var(--text-color-low, #777); font-size: .68rem; pointer-events: none; }',
+          	'.nt-if-nochart[hidden] { display: none !important; }',
+          	'.nt-if-foot { display: flex; justify-content: space-between; gap: 8px; margin-top: 5px; color: var(--text-color-low, #777); font-size: .68rem; font-variant-numeric: tabular-nums; }',
+          	'.nt-if-foot b { color: var(--text-color, #222); font-weight: 600; }',
+          	'.nt-if-meta { margin-top: 3px; overflow: hidden; color: var(--text-color-low, #777); font-size: .66rem; text-overflow: ellipsis; white-space: nowrap; }',
+          	'.nt-ports { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }',
+          	'.nt-port { position: relative; display: flex; flex-direction: column; align-items: center; padding: 14px 10px 12px; border: 1px solid var(--border-color, #ddd); border-radius: 12px; background: var(--background-color-high, #fff); color: var(--text-color-low, #777); text-align: center; }',
+          	'.nt-port.up { border-color: var(--nt-accent); color: var(--text-color, #222); }',
+          	'.nt-port.down { opacity: .72; }',
+          	'.nt-led { position: absolute; top: 10px; right: 10px; width: 8px; height: 8px; border-radius: 50%; background: #9ca3af; }',
+          	'.nt-port.up .nt-led { background: var(--nt-accent); box-shadow: 0 0 0 3px var(--nt-accent-soft); }',
+          	'.nt-port-name { font-size: .72rem; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }',
+          	'.nt-jack { display: block; margin: 6px 0 4px; color: #9ca3af; }',
+          	'.nt-port.up .nt-jack { color: var(--nt-accent); }',
+          	'.nt-port-speed { font-size: .82rem; font-weight: 700; }',
+          	'.nt-port-state { margin-top: 1px; color: var(--text-color-low, #777); font-size: .72rem; }',
+          	'.nt-port.up .nt-port-state { color: var(--nt-accent); }',
+          	'.nt-port-dev { max-width: 100%; margin-top: 4px; overflow: hidden; color: var(--text-color-low, #777); font-family: monospace; font-size: .68rem; text-overflow: ellipsis; white-space: nowrap; }',
+          	'.nt-chart-wrap { position: relative; padding: 10px 12px 6px; border: 1px solid var(--border-color, #ddd); border-radius: 12px; background: var(--background-color-high, #fff); }',
+          	'.nt-chart { display: block; width: 100%; height: 140px; }',
+          	'.nt-chart-empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--text-color-low, #777); font-size: .82rem; pointer-events: none; }',
+          	'.nt-chart-empty[hidden] { display: none !important; }',
+          	'.nt-chart-foot { display: flex; justify-content: space-between; gap: 12px; margin-top: 8px; color: var(--text-color-low, #777); font-size: .74rem; }',
+          	'.nt-legend { display: flex; gap: 12px; color: var(--text-color-low, #777); font-size: .74rem; }',
+          	'.nt-legend span::before { content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 5px; border-radius: 50%; background: currentColor; vertical-align: 1px; }',
+          	'.nt-legend .rx { color: var(--nt-rx); }',
+          	'.nt-legend .tx { color: var(--nt-tx); }',
+          	'.nt-footer { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--border-color, #ddd); }',
+          	'.nt-footer-info { min-width: 0; color: var(--text-color-low, #777); font-size: .76rem; line-height: 1.5; }',
+          	'.nt-footer-info div { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }',
+          	'.nt-page.offline .nt-rate, .nt-page.offline .nt-usage { opacity: .6; }',
+          	'@media (max-width: 860px) { .nt-grid-usage { grid-template-columns: repeat(2, minmax(0, 1fr)); } .nt-grid-usage .nt-usage:last-child { grid-column: 1 / -1; } .nt-sys { grid-template-columns: repeat(3, minmax(0, 1fr)); } .nt-uplinks { grid-template-columns: repeat(2, minmax(0, 1fr)); } }',
+          	'@media (max-width: 640px) { .nt-head { align-items: stretch; flex-direction: column; } .nt-actions { justify-content: flex-start; } .nt-grid-rate { grid-template-columns: 1fr; } .nt-uplinks { grid-template-columns: 1fr; } .nt-ports { grid-template-columns: repeat(2, minmax(0, 1fr)); } .nt-sys { grid-template-columns: repeat(2, minmax(0, 1fr)); } .nt-rate { padding: 16px; } .nt-rate-icon { width: 44px; height: 44px; font-size: 1.4rem; } .nt-ifgrid { grid-template-columns: 1fr; } .nt-footer-info div { white-space: normal; } }'
+          ].join('\n');
+
+          function num(v) {
+          	v = (typeof v === 'number') ? v : parseFloat(v);
+          	return isFinite(v) ? v : 0;
+          }
+
+          function fmtData(v) {
+          	v = num(v);
+          	var units = [ 'B', 'KB', 'MB', 'GB', 'TB' ];
+          	var i = 0;
+
+          	while (v >= 1024 && i < units.length - 1) {
+          		v /= 1024;
+          		i++;
+          	}
+
+          	var dec = (i === 0) ? 0 : (v >= 100 ? 0 : (v >= 10 ? 1 : 2));
+          	return v.toFixed(dec) + ' ' + units[i];
+          }
+
+          function fmtRate(v) {
+          	v = num(v) * 8;
+          	var units = [ 'bps', 'Kbps', 'Mbps', 'Gbps', 'Tbps' ];
+          	var i = 0;
+
+          	while (v >= 1000 && i < units.length - 1) {
+          		v /= 1000;
+          		i++;
+          	}
+
+          	var dec = (v >= 100 ? 0 : (v >= 10 ? 1 : 2));
+          	return v.toFixed(dec) + ' ' + units[i];
+          }
+
+          function fmtSpeed(mbps) {
+          	mbps = num(mbps);
+
+          	if (!mbps)
+          		return '—';
+
+          	if (mbps >= 1000)
+          		return (mbps / 1000).toFixed(mbps % 1000 ? 1 : 0) + ' Gbps';
+
+          	return mbps + ' Mbps';
+          }
+
+          function fmtTime(epoch) {
+          	var d = new Date(num(epoch) * 1000);
+
+          	if (!num(epoch) || isNaN(d.getTime()))
+          		return '—';
+
+          	function p(n) { return (n < 10 ? '0' : '') + n; }
+          	return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+          }
+
+          function fmtUptime(sec) {
+          	sec = num(sec);
+
+          	if (!sec)
+          		return '—';
+
+          	var d = Math.floor(sec / 86400);
+          	var h = Math.floor((sec % 86400) / 3600);
+          	var m = Math.floor((sec % 3600) / 60);
+
+          	if (d > 0)
+          		return d + 'h ' + h + 'j';
+          	if (h > 0)
+          		return h + 'j ' + m + 'm';
+          	return m + 'm';
+          }
+
+          function hexToRgba(hex, alpha) {
+          	hex = String(hex || '').replace('#', '');
+          	if (hex.length === 3)
+          		hex = hex[0] + hex[0] + hex[1] + hex[1] + hex[2] + hex[2];
+
+          	var r = parseInt(hex.slice(0, 2), 16);
+          	var g = parseInt(hex.slice(2, 4), 16);
+          	var b = parseInt(hex.slice(4, 6), 16);
+
+          	if (!isFinite(r) || !isFinite(g) || !isFinite(b))
+          		return 'rgba(34,197,94,' + alpha + ')';
+
+          	return 'rgba(' + r + ',' + g + ',' + b + ',' + alpha + ')';
+          }
+
+          function themeById(id) {
+          	for (var i = 0; i < THEMES.length; i++) {
+          		if (THEMES[i].id === id)
+          			return THEMES[i];
+          	}
+          	return THEMES[0];
+          }
+
+          function loadTheme() {
+          	try {
+          		return window.localStorage.getItem(THEME_KEY) || THEMES[0].id;
+          	}
+          	catch (e) {
+          		return THEMES[0].id;
+          	}
+          }
+
+          function saveTheme(id) {
+          	try {
+          		window.localStorage.setItem(THEME_KEY, id);
+          	}
+          	catch (e) {
+          		/* private mode: theme still works for this session */
+          	}
+          }
+
+          function el(tag, attrs, children) {
+          	var node = E(tag, attrs || {});
+
+          	if (children != null) {
+          		if (!Array.isArray(children))
+          			children = [ children ];
+
+          		children.forEach(function(child) {
+          			if (child == null)
+          				return;
+          			node.appendChild((typeof child === 'string' || typeof child === 'number')
+          				? document.createTextNode(String(child)) : child);
+          		});
+          	}
+
+          	return node;
+          }
+
+          function svg(tag, attrs, children) {
+          	var node = document.createElementNS('http://www.w3.org/2000/svg', tag);
+
+          	Object.keys(attrs || {}).forEach(function(k) { node.setAttribute(k, attrs[k]); });
+
+          	(children || []).forEach(function(child) { node.appendChild(child); });
+          	return node;
+          }
+
+          function makeJack() {
+          	return svg('svg', {
+          		'viewBox': '0 0 64 48',
+          		'width': '58',
+          		'height': '44',
+          		'class': 'nt-jack',
+          		'aria-hidden': 'true'
+          	}, [
+          		svg('rect', { x: '5', y: '9', width: '54', height: '34', rx: '5', fill: 'none', stroke: 'currentColor', 'stroke-width': '3' }),
+          		svg('path', { d: 'M14 9 V3 H36 V9', fill: 'none', stroke: 'currentColor', 'stroke-width': '3', 'stroke-linejoin': 'round' }),
+          		svg('rect', { x: '16', y: '20', width: '32', height: '9', rx: '2', fill: 'currentColor', opacity: '.24' }),
+          		svg('rect', { x: '12', y: '34', width: '6', height: '4', rx: '1', fill: 'currentColor', opacity: '.45' }),
+          		svg('rect', { x: '22', y: '34', width: '6', height: '4', rx: '1', fill: 'currentColor', opacity: '.45' }),
+          		svg('rect', { x: '36', y: '34', width: '6', height: '4', rx: '1', fill: 'currentColor', opacity: '.45' }),
+          		svg('rect', { x: '46', y: '34', width: '6', height: '4', rx: '1', fill: 'currentColor', opacity: '.45' })
+          	]);
+          }
+
+          function portCard(port) {
+          	var up = port && port.up === true;
+
+          	return el('div', { 'class': 'nt-port ' + (up ? 'up' : 'down') }, [
+          		el('span', { 'class': 'nt-led' }),
+          		el('div', { 'class': 'nt-port-name' }, (port && port.label) || 'LAN'),
+          		makeJack(),
+          		el('div', { 'class': 'nt-port-speed' }, up ? fmtSpeed(port.speed) : '—'),
+          		el('div', { 'class': 'nt-port-state' }, up ? 'Terhubung' : 'Tidak terhubung'),
+          		el('div', { 'class': 'nt-port-dev' }, (port && port.device) || '')
+          	]);
+          }
+
+          function uplinkCard(u) {
+          	u = u || {};
+
+          	var up = u.up === true;
+          	var active = u.active === true;
+          	var speed = num(u.speed);
+          	var addr = String(u.address || '').split('/')[0];
+          	var gw = String(u.gateway || '');
+          	var metric = num(u.metric);
+          	var badge = !up ? 'OFF' : (active ? 'AKTIF' : 'CADANGAN');
+          	var state = up
+          		? 'Terhubung' + (speed ? ' • ' + fmtSpeed(speed) : '')
+          		: 'Tidak terhubung';
+
+          	return el('div', { 'class': 'nt-uplink ' + (up ? 'up' : 'down') + (active ? ' active' : '') }, [
+          		el('div', { 'class': 'nt-uplink-head' }, [
+          			el('span', { 'class': 'nt-uplink-name' }, u.device || '—'),
+          			el('span', { 'class': 'nt-uplink-badge' }, badge)
+          		]),
+          		el('div', { 'class': 'nt-uplink-state' }, [
+          			el('span', { 'class': 'nt-led' }),
+          			el('span', {}, state)
+          		]),
+          		el('div', { 'class': 'nt-uplink-rows' }, [
+          			el('div', {}, [ el('span', {}, 'IP'), el('b', {}, addr || '—') ]),
+          			el('div', {}, [ el('span', {}, 'Gateway'), el('b', {}, gw || '—') ]),
+          			el('div', {}, [ el('span', {}, 'Metric'), el('b', {}, (metric > 0 && metric < 9999) ? String(metric) : '—') ])
+          		]),
+          		el('div', { 'class': 'nt-uplink-traffic' }, [
+          			el('span', {}, [ el('span', { 'class': 'rx' }, '↓ '), el('b', {}, fmtRate(u.rx_rate)) ]),
+          			el('span', {}, [ el('span', { 'class': 'tx' }, '↑ '), el('b', {}, fmtRate(u.tx_rate)) ])
+          		]),
+          		el('div', { 'class': 'nt-uplink-total' }, 'Total ↓ ' + fmtData(u.rx_total) + ' • ↑ ' + fmtData(u.tx_total))
+          	]);
+          }
+
+          function sysTile(label, value, sub) {
+          	return el('div', { 'class': 'nt-sys-item' }, [
+          		el('div', { 'class': 'nt-sys-label' }, label),
+          		el('div', { 'class': 'nt-sys-value' }, value),
+          		el('div', { 'class': 'nt-sys-sub' }, sub || '')
+          	]);
+          }
+
+          function usageCard(key, title) {
+          	return el('div', { 'class': 'nt-card nt-usage' }, [
+          		el('div', { 'class': 'nt-usage-label' }, title),
+          		el('div', { 'class': 'nt-usage-value', 'data-k': key + 'Total' }, '0 B'),
+          		el('div', { 'class': 'nt-usage-split' }, [
+          			el('span', {}, [ el('span', { 'class': 'rx' }, '↓ '), el('b', { 'data-k': key + 'Rx' }, '0 B') ]),
+          			el('span', {}, [ el('span', { 'class': 'tx' }, '↑ '), el('b', { 'data-k': key + 'Tx' }, '0 B') ])
+          		])
+          	]);
+          }
+
+          function ifaceRank(item) {
+          	var dev = String((item && item.device) || '');
+          	var m = /^lan([0-9]+)$/.exec(dev);
+
+          	if (m)
+          		return num(m[1]);
+          	if (dev === 'br-lan')
+          		return 50;
+          	if (dev === '__usb')
+          		return 65;
+          	if (item && item.kind === 'usb')
+          		return 60;
+          	if (dev === 'wan' || dev === 'pppoe-wan' || (item && item.kind === 'wan'))
+          		return 70;
+          	return 80;
+          }
+
+          function createIfaceCard() {
+          	var root = el('div', { 'class': 'nt-ifcard' }, [
+          		el('div', { 'class': 'nt-if-head' }, [
+          			el('span', { 'class': 'nt-if-dot' }),
+          			el('span', { 'class': 'nt-if-name', 'data-k': 'name' }, '—'),
+          			el('span', { 'class': 'nt-if-dev', 'data-k': 'dev' }, ''),
+          			el('span', { 'class': 'nt-if-badges' }, [
+          				el('span', { 'class': 'nt-badge', 'data-k': 'kind' }, 'LAN')
+          			])
+          		]),
+          		el('div', { 'class': 'nt-if-rates' }, [
+          			el('span', { 'class': 'rx' }, [ '↓ ', el('b', { 'data-k': 'rx' }, '0 bps') ]),
+          			el('span', { 'class': 'tx' }, [ '↑ ', el('b', { 'data-k': 'tx' }, '0 bps') ])
+          		]),
+          		el('div', { 'class': 'nt-if-chartwrap' }, [
+          			el('canvas', { 'class': 'nt-if-chart', 'data-k': 'chart' }),
+          			el('div', { 'class': 'nt-if-nochart', 'data-k': 'empty' }, 'Menunggu data…')
+          		]),
+          		el('div', { 'class': 'nt-if-foot' }, [
+          			el('span', {}, [ 'Total ↓ ', el('b', { 'data-k': 'rxTotal' }, '0 B') ]),
+          			el('span', {}, [ '↑ ', el('b', { 'data-k': 'txTotal' }, '0 B') ])
+          		]),
+          		el('div', { 'class': 'nt-if-meta', 'data-k': 'meta' }, '')
+          	]);
+
+          	return {
+          		root: root,
+          		name: root.querySelector('[data-k="name"]'),
+          		dev: root.querySelector('[data-k="dev"]'),
+          		kind: root.querySelector('[data-k="kind"]'),
+          		rx: root.querySelector('[data-k="rx"]'),
+          		tx: root.querySelector('[data-k="tx"]'),
+          		rxTotal: root.querySelector('[data-k="rxTotal"]'),
+          		txTotal: root.querySelector('[data-k="txTotal"]'),
+          		chart: root.querySelector('[data-k="chart"]'),
+          		empty: root.querySelector('[data-k="empty"]'),
+          		meta: root.querySelector('[data-k="meta"]'),
+          		history: [],
+          		placeholder: false
+          	};
+          }
+
+          return view.extend({
+          	load: function() {
+          		return L.resolveDefault(callStatus(), null);
+          	},
+
+          	render: function(status) {
+          		var self = this;
+
+          		this.history = [];
+          		this.lastPorts = null;
+          		this.lastUplinks = null;
+          		this.ifCards = {};
+          		this.nodes = {};
+          		this.theme = themeById(loadTheme());
+
+          		var root = el('div', { 'class': 'nt-page' }, [
+          			el('style', {}, CSS),
+          			el('div', { 'class': 'nt-head' }, [
+          				el('div', {}, [
+          					el('h2', { 'class': 'nt-title' }, 'Traffic Monitor'),
+          					el('p', { 'class': 'nt-sub' }, 'Traffic real-time LAN 1–4, br-lan, USB, dan uplink internet. Grafik tersimpan permanen.')
+          				]),
+          				el('div', { 'class': 'nt-actions' }, [
+          					el('button', {
+          						'type': 'button',
+          						'class': 'nt-btn nt-btn-theme',
+          						'data-k': 'theme',
+          						'title': 'Ganti tema tampilan',
+          						'click': L.bind(this.onTheme, this)
+          					}, [
+          						el('span', { 'class': 'nt-theme-dot' }),
+          						el('span', { 'data-k': 'themeText' }, this.theme.name)
+          					]),
+          					el('button', {
+          						'type': 'button',
+          						'class': 'nt-btn nt-btn-reset',
+          						'data-k': 'reset',
+          						'click': L.bind(this.onReset, this)
+          					}, 'Reset data'),
+          					el('div', { 'class': 'nt-live', 'data-k': 'live' }, [
+          						el('span', { 'class': 'nt-dot' }),
+          						el('span', { 'data-k': 'liveText' }, 'Memuat…')
+          					])
+          				])
+          			]),
+          			el('div', { 'class': 'nt-warning', 'data-k': 'warning', hidden: 'hidden' }, [
+          				el('span', { 'class': 'nt-warning-icon' }, '!'),
+          				el('span', { 'data-k': 'warningText' }, '')
+          			]),
+          			el('div', { 'class': 'nt-grid-rate' }, [
+          				el('div', { 'class': 'nt-card nt-rate down' }, [
+          					el('div', { 'class': 'nt-rate-icon' }, '↓'),
+          					el('div', { 'class': 'nt-rate-body' }, [
+          						el('div', { 'class': 'nt-rate-label' }, 'Download'),
+          						el('div', { 'class': 'nt-rate-value', 'data-k': 'rxRate' }, '0 bps'),
+          						el('div', { 'class': 'nt-rate-foot' }, [ 'Total ', el('span', { 'data-k': 'rxTotal' }, '0 B') ])
+          					])
+          				]),
+          				el('div', { 'class': 'nt-card nt-rate up' }, [
+          					el('div', { 'class': 'nt-rate-icon' }, '↑'),
+          					el('div', { 'class': 'nt-rate-body' }, [
+          						el('div', { 'class': 'nt-rate-label' }, 'Upload'),
+          						el('div', { 'class': 'nt-rate-value', 'data-k': 'txRate' }, '0 bps'),
+          						el('div', { 'class': 'nt-rate-foot' }, [ 'Total ', el('span', { 'data-k': 'txTotal' }, '0 B') ])
+          					])
+          				])
+          			]),
+          			el('div', { 'class': 'nt-grid-usage' }, [
+          				usageCard('day', 'Hari ini'),
+          				usageCard('month', 'Bulan ini'),
+          				usageCard('all', 'Total')
+          			]),
+          			el('div', { 'class': 'nt-section' }, [
+          				el('div', { 'class': 'nt-section-head' }, [
+          					el('h3', {}, 'Uplink Internet'),
+          					el('span', { 'class': 'nt-section-note', 'data-k': 'uplinkNote' }, '—')
+          				]),
+          				el('div', { 'class': 'nt-uplinks', 'data-k': 'uplinks' })
+          			]),
+          			el('div', { 'class': 'nt-section' }, [
+          				el('div', { 'class': 'nt-section-head' }, [
+          					el('h3', {}, 'Status Port LAN'),
+          					el('span', { 'class': 'nt-section-note', 'data-k': 'portNote' }, '—')
+          				]),
+          				el('div', { 'class': 'nt-ports', 'data-k': 'ports' })
+          			]),
+          			el('div', { 'class': 'nt-section' }, [
+          				el('div', { 'class': 'nt-section-head' }, [
+          					el('h3', {}, 'Traffic per Interface'),
+          					el('span', { 'class': 'nt-section-note', 'data-k': 'ifNote' }, '—')
+          				]),
+          				el('div', { 'class': 'nt-ifgrid', 'data-k': 'ifaces' })
+          			]),
+          			el('div', { 'class': 'nt-section' }, [
+          				el('div', { 'class': 'nt-section-head' }, [
+          					el('h3', {}, 'Traffic internet berjalan'),
+          					el('div', { 'class': 'nt-legend' }, [
+          						el('span', { 'class': 'rx' }, 'Download'),
+          						el('span', { 'class': 'tx' }, 'Upload')
+          					])
+          				]),
+          				el('div', { 'class': 'nt-chart-wrap' }, [
+          					el('canvas', { 'class': 'nt-chart', 'data-k': 'chart' }),
+          					el('div', { 'class': 'nt-chart-empty', 'data-k': 'chartEmpty' }, 'Menunggu data…')
+          				]),
+          				el('div', { 'class': 'nt-chart-foot' }, [
+          					el('span', {}, '2 menit terakhir • tersimpan permanen'),
+          					el('span', { 'data-k': 'updated' }, '—')
+          				])
+          			]),
+          			el('div', { 'class': 'nt-section' }, [
+          				el('div', { 'class': 'nt-section-head' }, [
+          					el('h3', {}, 'Kondisi Router'),
+          					el('span', { 'class': 'nt-section-note' }, 'diperbarui tiap 10 detik')
+          				]),
+          				el('div', { 'class': 'nt-sys', 'data-k': 'sys' })
+          			]),
+          			el('div', { 'class': 'nt-footer' }, [
+          				el('div', { 'class': 'nt-footer-info' }, [
+          					el('div', { 'data-k': 'wanInfo' }, 'WAN: —'),
+          					el('div', { 'data-k': 'saveInfo' }, 'Data dan grafik disimpan otomatis ke flash.')
+          				])
+          			])
+          		]);
+
+          		this.root = root;
+          		this.nodes.live = root.querySelector('[data-k="live"]');
+          		this.nodes.liveText = root.querySelector('[data-k="liveText"]');
+          		this.nodes.warning = root.querySelector('[data-k="warning"]');
+          		this.nodes.warningText = root.querySelector('[data-k="warningText"]');
+          		this.nodes.rxRate = root.querySelector('[data-k="rxRate"]');
+          		this.nodes.txRate = root.querySelector('[data-k="txRate"]');
+          		this.nodes.rxTotal = root.querySelector('[data-k="rxTotal"]');
+          		this.nodes.txTotal = root.querySelector('[data-k="txTotal"]');
+          		this.nodes.dayTotal = root.querySelector('[data-k="dayTotal"]');
+          		this.nodes.dayRx = root.querySelector('[data-k="dayRx"]');
+          		this.nodes.dayTx = root.querySelector('[data-k="dayTx"]');
+          		this.nodes.monthTotal = root.querySelector('[data-k="monthTotal"]');
+          		this.nodes.monthRx = root.querySelector('[data-k="monthRx"]');
+          		this.nodes.monthTx = root.querySelector('[data-k="monthTx"]');
+          		this.nodes.allTotal = root.querySelector('[data-k="allTotal"]');
+          		this.nodes.allRx = root.querySelector('[data-k="allRx"]');
+          		this.nodes.allTx = root.querySelector('[data-k="allTx"]');
+          		this.nodes.ports = root.querySelector('[data-k="ports"]');
+          		this.nodes.portNote = root.querySelector('[data-k="portNote"]');
+          		this.nodes.uplinks = root.querySelector('[data-k="uplinks"]');
+          		this.nodes.uplinkNote = root.querySelector('[data-k="uplinkNote"]');
+          		this.nodes.ifaces = root.querySelector('[data-k="ifaces"]');
+          		this.nodes.ifNote = root.querySelector('[data-k="ifNote"]');
+          		this.nodes.sys = root.querySelector('[data-k="sys"]');
+          		this.nodes.chart = root.querySelector('[data-k="chart"]');
+          		this.nodes.chartEmpty = root.querySelector('[data-k="chartEmpty"]');
+          		this.nodes.updated = root.querySelector('[data-k="updated"]');
+          		this.nodes.wanInfo = root.querySelector('[data-k="wanInfo"]');
+          		this.nodes.saveInfo = root.querySelector('[data-k="saveInfo"]');
+          		this.nodes.reset = root.querySelector('[data-k="reset"]');
+          		this.nodes.theme = root.querySelector('[data-k="theme"]');
+          		this.nodes.themeText = root.querySelector('[data-k="themeText"]');
+
+          		this.setTheme(this.theme.id, false);
+
+          		this._onResize = function() { self.redrawAll(); };
+          		window.addEventListener('resize', this._onResize);
+
+          		if (status && status.ok !== false) {
+          			this.update(status);
+          			this.showWarning(status);
+          		}
+          		else {
+          			this.update(status || {});
+          			this.showOffline(status && status.error);
+          		}
+
+          		poll.add(L.bind(this.refresh, this), 2);
+
+          		this._mountTimer = window.setTimeout(function() {
+          			self.redrawAll();
+          		}, 0);
+
+          		return root;
+          	},
+
+          	refresh: function() {
+          		var self = this;
+
+          		return callStatus().then(function(status) {
+          			if (!status || status.ok === false) {
+          				self.showOffline(status && status.error);
+          				return;
+          			}
+
+          			self.update(status);
+          			self.showWarning(status);
+          		}).catch(function(err) {
+          			self.showOffline(err && err.message ? err.message : String(err));
+          		});
+          	},
+
+          	update: function(status) {
+          		var self = this;
+          		var s = status || {};
+          		var ports = Array.isArray(s.ports) ? s.ports : [];
+          		var dayRx = num(s.day_rx), dayTx = num(s.day_tx);
+          		var monthRx = num(s.month_rx), monthTx = num(s.month_tx);
+          		var allRx = num(s.rx_total), allTx = num(s.tx_total);
+
+          		this.nodes.rxRate.textContent = fmtRate(s.rx_rate);
+          		this.nodes.txRate.textContent = fmtRate(s.tx_rate);
+          		this.nodes.rxTotal.textContent = fmtData(allRx);
+          		this.nodes.txTotal.textContent = fmtData(allTx);
+
+          		this.nodes.dayTotal.textContent = fmtData(dayRx + dayTx);
+          		this.nodes.dayRx.textContent = fmtData(dayRx);
+          		this.nodes.dayTx.textContent = fmtData(dayTx);
+
+          		this.nodes.monthTotal.textContent = fmtData(monthRx + monthTx);
+          		this.nodes.monthRx.textContent = fmtData(monthRx);
+          		this.nodes.monthTx.textContent = fmtData(monthTx);
+
+          		this.nodes.allTotal.textContent = fmtData(allRx + allTx);
+          		this.nodes.allRx.textContent = fmtData(allRx);
+          		this.nodes.allTx.textContent = fmtData(allTx);
+
+          		var upCount = ports.filter(function(p) { return p && p.up === true; }).length;
+          		this.nodes.portNote.textContent = ports.length
+          			? upCount + '/' + ports.length + ' port terhubung'
+          			: 'Port LAN tidak terdeteksi';
+
+          		var sig = JSON.stringify(ports);
+          		if (sig !== this.lastPorts) {
+          			this.lastPorts = sig;
+          			while (this.nodes.ports.firstChild)
+          				this.nodes.ports.removeChild(this.nodes.ports.firstChild);
+          			if (ports.length) {
+          				ports.forEach(function(p) { self.nodes.ports.appendChild(portCard(p)); }, this);
+          			}
+          			else {
+          				this.nodes.ports.appendChild(el('div', { 'class': 'nt-section-note' }, 'Tidak ada port LAN yang bisa dibaca.'));
+          			}
+          		}
+
+          		var uplinks = Array.isArray(s.uplinks) ? s.uplinks : [];
+          		if (!uplinks.length && Array.isArray(s.interfaces)) {
+          			uplinks = s.interfaces.map(function(dev) {
+          				return { device: dev, up: true };
+          			});
+          		}
+
+          		var upSig = JSON.stringify(uplinks);
+          		if (upSig !== this.lastUplinks) {
+          			this.lastUplinks = upSig;
+          			while (this.nodes.uplinks.firstChild)
+          				this.nodes.uplinks.removeChild(this.nodes.uplinks.firstChild);
+          			if (uplinks.length) {
+          				uplinks.forEach(function(u) { self.nodes.uplinks.appendChild(uplinkCard(u)); });
+          			}
+          			else {
+          				this.nodes.uplinks.appendChild(el('div', { 'class': 'nt-section-note' }, 'Uplink internet tidak terdeteksi.'));
+          			}
+          		}
+
+          		var activeNames = uplinks.filter(function(u) {
+          			return u && u.active === true;
+          		}).map(function(u) {
+          			return u.device;
+          		});
+
+          		this.nodes.uplinkNote.textContent = uplinks.length
+          			? uplinks.length + ' uplink • aktif: ' + (activeNames.join(', ') || '—')
+          			: '—';
+
+          		this.updateIfaces(s);
+
+          		this.nodes.updated.textContent = num(s.time) ? 'Diperbarui ' + fmtTime(s.time) : '—';
+          		this.nodes.wanInfo.textContent = (Array.isArray(s.interfaces) && s.interfaces.length)
+          			? 'Uplink: ' + s.interfaces.join(', ')
+          			: 'Uplink: tidak terdeteksi';
+          		this.nodes.saveInfo.textContent = num(s.saved_at)
+          			? 'Tersimpan ' + fmtTime(s.saved_at) + ' • otomatis tiap ' + num(s.save_interval || 60) + ' detik.'
+          			: 'Data dan grafik disimpan otomatis tiap ' + num(s.save_interval || 60) + ' detik.';
+
+          		this.nodes.live.classList.remove('offline');
+          		this.nodes.liveText.textContent = 'Monitor aktif';
+          		this.root.classList.remove('offline');
+
+          		this.history = Array.isArray(s.history) ? s.history : [];
+          		this.drawGraph(this.history);
+
+          		var sys = s.system || {};
+          		var load = Array.isArray(sys.load) ? sys.load : [ 0, 0, 0 ];
+          		var memTotal = num(sys.mem_total_kb);
+          		var memUsed = num(sys.mem_used_kb);
+          		var flashTotal = num(sys.flash_total_kb);
+          		var flashUsed = num(sys.flash_used_kb);
+          		var temp = sys.temp_c;
+          		var wifiAvailable = sys.wifi_available === true;
+
+          		while (this.nodes.sys.firstChild)
+          			this.nodes.sys.removeChild(this.nodes.sys.firstChild);
+
+          		[
+          			sysTile('CPU load', num(load[0]).toFixed(2), '1 menit'),
+          			sysTile('RAM', memTotal ? num(sys.mem_percent) + '%' : '—',
+          				memTotal ? fmtData(memUsed * 1024) + ' / ' + fmtData(memTotal * 1024) : '—'),
+          			sysTile('Suhu', (temp == null) ? '—' : num(temp).toFixed(1) + ' °C', 'CPU'),
+          			sysTile('Flash', flashTotal ? num(sys.flash_percent) + '%' : '—',
+          				flashTotal ? fmtData(flashUsed * 1024) + ' / ' + fmtData(flashTotal * 1024) : '—'),
+          			sysTile('Client WiFi', wifiAvailable ? String(num(sys.wifi_clients)) : '—',
+          				wifiAvailable ? 'terhubung' : 'tidak tersedia'),
+          			sysTile('Uptime', fmtUptime(s.uptime), 'sejak boot')
+          		].forEach(function(tile) {
+          			self.nodes.sys.appendChild(tile);
+          		});
+          	},
+
+          	updateIfaces: function(status) {
+          		var self = this;
+          		var ifaces = Array.isArray(status.ifaces) ? status.ifaces.slice() : null;
+
+          		if (!ifaces) {
+          			ifaces = [];
+          			var seen = {};
+
+          			(Array.isArray(status.ports) ? status.ports : []).forEach(function(p) {
+          				if (!p || !p.device || seen[p.device])
+          					return;
+          				seen[p.device] = true;
+          				ifaces.push({
+          					device: p.device, label: p.label, kind: 'lan', up: p.up === true,
+          					speed: p.speed, duplex: p.duplex,
+          					rx_rate: 0, tx_rate: 0, rx_total: 0, tx_total: 0, history: []
+          				});
+          			});
+
+          			(Array.isArray(status.uplinks) ? status.uplinks : []).forEach(function(u) {
+          				if (!u || !u.device || seen[u.device])
+          					return;
+          				seen[u.device] = true;
+          				ifaces.push({
+          					device: u.device, label: u.device, kind: 'wan', wan: true, up: u.up === true,
+          					speed: u.speed, duplex: u.duplex,
+          					rx_rate: u.rx_rate, tx_rate: u.tx_rate,
+          					rx_total: u.rx_total, tx_total: u.tx_total, history: []
+          				});
+          			});
+          		}
+
+          		ifaces = ifaces.filter(function(item) { return item && item.device; });
+
+          		var usbFound = status.usb_found === true || ifaces.some(function(i) {
+          			return i.kind === 'usb' || /^(usb|wwan|rndis)/.test(String(i.device || ''));
+          		});
+
+          		if (!usbFound) {
+          			ifaces.push({
+          				device: '__usb', label: 'USB', kind: 'usb', placeholder: true,
+          				up: false, rx_rate: 0, tx_rate: 0, rx_total: 0, tx_total: 0, history: []
+          			});
+          		}
+
+          		ifaces.sort(function(a, b) { return ifaceRank(a) - ifaceRank(b); });
+
+          		var keep = {};
+
+          		ifaces.forEach(function(item) {
+          			var key = item.device;
+          			keep[key] = true;
+
+          			var card = self.ifCards[key];
+          			if (!card) {
+          				card = createIfaceCard();
+          				self.ifCards[key] = card;
+          				self.nodes.ifaces.appendChild(card.root);
+          			}
+
+          			card.history = item.placeholder ? [] : (Array.isArray(item.history) ? item.history : []);
+          			card.placeholder = item.placeholder === true;
+          			self.updateIfaceCard(card, item);
+          		});
+
+          		Object.keys(this.ifCards).forEach(function(key) {
+          			if (keep[key])
+          				return;
+          			var card = self.ifCards[key];
+          			if (card.root.parentNode)
+          				card.root.parentNode.removeChild(card.root);
+          			delete self.ifCards[key];
+          		});
+
+          		ifaces.forEach(function(item) {
+          			var card = self.ifCards[item.device];
+          			if (card && self.nodes.ifaces.lastChild !== card.root)
+          				self.nodes.ifaces.appendChild(card.root);
+          		});
+
+          		var real = ifaces.filter(function(i) { return !i.placeholder; });
+          		var up = real.filter(function(i) { return i.up === true; }).length;
+
+          		this.nodes.ifNote.textContent = real.length
+          			? up + '/' + real.length + ' interface terhubung'
+          			: '—';
+          	},
+
+          	updateIfaceCard: function(card, item) {
+          		var up = item.up === true;
+          		var placeholder = item.placeholder === true;
+          		var kind = String(item.kind || 'lan').toUpperCase();
+
+          		card.root.classList.toggle('down', !up && !placeholder);
+          		card.root.classList.toggle('placeholder', placeholder);
+
+          		card.name.textContent = item.label || item.device || '—';
+          		card.dev.textContent = placeholder ? '' : (item.device || '');
+
+          		if (item.wan === true && kind !== 'WAN')
+          			kind += ' • WAN';
+          		card.kind.textContent = kind;
+          		card.kind.classList.toggle('wan', item.wan === true);
+
+          		card.rx.textContent = placeholder ? '—' : fmtRate(item.rx_rate);
+          		card.tx.textContent = placeholder ? '—' : fmtRate(item.tx_rate);
+          		card.rxTotal.textContent = placeholder ? '—' : fmtData(item.rx_total);
+          		card.txTotal.textContent = placeholder ? '—' : fmtData(item.tx_total);
+
+          		if (placeholder) {
+          			card.meta.textContent = 'Port USB tidak terdeteksi';
+          			card.empty.textContent = 'Belum ada perangkat USB';
+          			card.empty.hidden = false;
+          		}
+          		else {
+          			var parts = [];
+
+          			if (num(item.speed))
+          				parts.push(fmtSpeed(item.speed));
+          			if (item.duplex)
+          				parts.push(item.duplex);
+          			parts.push(up ? 'Terhubung' : 'Tidak terhubung');
+
+          			card.meta.textContent = parts.join(' • ');
+          			card.empty.textContent = 'Menunggu data…';
+          			card.empty.hidden = card.history.length >= 2;
+          		}
+
+          		this.drawSeries(card.chart, card.history, { height: 82, compact: true });
+          	},
+
+          	setTheme: function(id, redraw) {
+          		var theme = themeById(id);
+
+          		this.theme = theme;
+
+          		if (this.root) {
+          			this.root.style.setProperty('--nt-rx', theme.rx);
+          			this.root.style.setProperty('--nt-tx', theme.tx);
+          			this.root.style.setProperty('--nt-accent', theme.accent);
+          			this.root.style.setProperty('--nt-accent-soft', hexToRgba(theme.accent, .15));
+          		}
+
+          		if (this.nodes.themeText)
+          			this.nodes.themeText.textContent = theme.name;
+          		if (this.nodes.theme)
+          			this.nodes.theme.setAttribute('title', 'Tema: ' + theme.name + ' (klik untuk ganti)');
+
+          		if (redraw)
+          			this.redrawAll();
+          	},
+
+          	onTheme: function() {
+          		if (!this.theme)
+          			this.theme = THEMES[0];
+
+          		var idx = THEMES.indexOf(this.theme);
+          		if (idx < 0)
+          			idx = 0;
+
+          		var next = THEMES[(idx + 1) % THEMES.length];
+
+          		this.setTheme(next.id, true);
+          		saveTheme(next.id);
+          	},
+
+          	redrawAll: function() {
+          		var self = this;
+
+          		this.drawGraph(this.history);
+
+          		Object.keys(this.ifCards).forEach(function(key) {
+          			var card = self.ifCards[key];
+          			self.drawSeries(card.chart, card.history, { height: 82, compact: true });
+          		});
+          	},
+
+          	showWarning: function(status) {
+          		var msg = '';
+
+          		if (status && status.wan_detected === false)
+          			msg = 'Interface WAN belum terdeteksi. Pastikan internet aktif, atau isi option interfaces di /etc/config/nettraffic.';
+
+          		this.nodes.warning.hidden = !msg;
+          		this.nodes.warningText.textContent = msg;
+          	},
+
+          	showOffline: function(error) {
+          		this.nodes.live.classList.add('offline');
+          		this.nodes.liveText.textContent = 'Monitor tidak aktif';
+          		this.root.classList.add('offline');
+          		this.nodes.warning.hidden = false;
+          		this.nodes.warningText.textContent = error
+          			? 'Monitor tidak aktif: ' + error
+          			: 'Monitor tidak aktif. Jalankan /etc/init.d/nettraffic start.';
+          	},
+
+          	drawGraph: function(history) {
+          		var canvas = this.nodes.chart;
+          		if (!canvas)
+          			return;
+
+          		history = Array.isArray(history) ? history : [];
+          		this.drawSeries(canvas, history, { height: 140 });
+
+          		if (this.nodes.chartEmpty)
+          			this.nodes.chartEmpty.hidden = history.length >= 2;
+          	},
+
+          	drawSeries: function(canvas, history, opts) {
+          		if (!canvas)
+          			return;
+
+          		opts = opts || {};
+          		history = Array.isArray(history) ? history : [];
+
+          		var theme = this.theme || THEMES[0];
+          		var cssW = canvas.clientWidth || (canvas.parentNode && canvas.parentNode.clientWidth) || opts.width || 240;
+          		var cssH = canvas.clientHeight || opts.height || 140;
+
+          		if (cssW < 2)
+          			cssW = opts.width || 240;
+          		if (cssH < 2)
+          			cssH = opts.height || 140;
+
+          		var dpr = window.devicePixelRatio || 1;
+
+          		canvas.width = Math.max(1, Math.round(cssW * dpr));
+          		canvas.height = Math.max(1, Math.round(cssH * dpr));
+
+          		var ctx = canvas.getContext('2d');
+          		if (!ctx)
+          			return;
+
+          		ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+          		ctx.clearRect(0, 0, cssW, cssH);
+
+          		var padX = 8;
+          		var padTop = opts.compact ? 6 : 8;
+          		var padBottom = opts.compact ? 4 : 6;
+          		var w = Math.max(1, cssW - padX * 2);
+          		var h = Math.max(1, cssH - padTop - padBottom);
+
+          		if (history.length < 2) {
+          			ctx.strokeStyle = 'rgba(128,128,128,.28)';
+          			ctx.lineWidth = 1;
+          			ctx.beginPath();
+          			ctx.moveTo(padX, cssH - padBottom);
+          			ctx.lineTo(cssW - padX, cssH - padBottom);
+          			ctx.stroke();
+          			return;
+          		}
+
+          		var max = 1;
+          		history.forEach(function(pair) {
+          			max = Math.max(max, num(pair && pair[0]), num(pair && pair[1]));
+          		});
+
+          		ctx.strokeStyle = 'rgba(128,128,128,.16)';
+          		ctx.lineWidth = 1;
+          		for (var g = 0; g <= 4; g++) {
+          			var gy = padTop + (h * g / 4);
+          			ctx.beginPath();
+          			ctx.moveTo(padX, gy);
+          			ctx.lineTo(cssW - padX, gy);
+          			ctx.stroke();
+          		}
+
+          		function point(i, value) {
+          			var x = padX + (history.length === 1 ? 0 : (w * i / (history.length - 1)));
+          			var y = padTop + (h * (1 - value / max));
+          			return [ x, y ];
+          		}
+
+          		var grad = ctx.createLinearGradient(0, padTop, 0, padTop + h);
+          		grad.addColorStop(0, hexToRgba(theme.rx, .26));
+          		grad.addColorStop(1, hexToRgba(theme.rx, 0));
+          		ctx.beginPath();
+          		ctx.moveTo(padX, padTop + h);
+          		history.forEach(function(pair, i) {
+          			var pt = point(i, num(pair && pair[0]));
+          			ctx.lineTo(pt[0], pt[1]);
+          		});
+          		ctx.lineTo(padX + w, padTop + h);
+          		ctx.closePath();
+          		ctx.fillStyle = grad;
+          		ctx.fill();
+
+          		function line(index, color) {
+          			ctx.beginPath();
+          			history.forEach(function(pair, i) {
+          				var pt = point(i, num(pair && pair[index]));
+          				if (i === 0) ctx.moveTo(pt[0], pt[1]);
+          				else ctx.lineTo(pt[0], pt[1]);
+          			});
+          			ctx.strokeStyle = color;
+          			ctx.lineWidth = opts.compact ? 1.6 : 2;
+          			ctx.lineJoin = 'round';
+          			ctx.lineCap = 'round';
+          			ctx.stroke();
+          		}
+
+          		line(0, theme.rx);
+          		line(1, theme.tx);
+
+          		[ 0, 1 ].forEach(function(index) {
+          			var pt = point(history.length - 1, num(history[history.length - 1] && history[history.length - 1][index]));
+          			ctx.beginPath();
+          			ctx.arc(pt[0], pt[1], opts.compact ? 2 : 2.5, 0, Math.PI * 2);
+          			ctx.fillStyle = index === 0 ? theme.rx : theme.tx;
+          			ctx.fill();
+          		});
+
+          		if (!opts.compact) {
+          			ctx.fillStyle = 'rgba(128,128,128,.9)';
+          			ctx.font = '11px sans-serif';
+          			ctx.textAlign = 'right';
+          			ctx.fillText(fmtRate(max), cssW - padX, 12);
+          		}
+          	},
+
+          	onReset: function() {
+          		var self = this;
+
+          		if (!window.confirm('Reset data pemakaian dan semua grafik interface? Tindakan ini tidak bisa dibatalkan.'))
+          			return;
+
+          		this.nodes.reset.disabled = true;
+
+          		return callReset().then(function(res) {
+          			if (!res || res.ok === false) {
+          				ui.addNotification(null, el('p', {}, (res && res.error) || 'Gagal mereset data.'), 'danger');
+          				return;
+          			}
+
+          			ui.addNotification(null, el('p', {}, 'Data pemakaian dan grafik berhasil direset.'), 'info');
+
+          			return new Promise(function(resolve) {
+          				window.setTimeout(resolve, 1200);
+          			}).then(function() {
+          				return self.refresh();
+          			});
+          		}).catch(function(err) {
+          			ui.addNotification(null, el('p', {}, 'Gagal mereset: ' + (err && err.message ? err.message : err)), 'danger');
+          		}).then(function() {
+          			self.nodes.reset.disabled = false;
+          		});
+          	},
+
+          	remove: function() {
+          		if (this._onResize)
+          			window.removeEventListener('resize', this._onResize);
+          		if (this._mountTimer)
+          			window.clearTimeout(this._mountTimer);
+          	},
+
+          	handleSaveApply: null,
+          	handleSave: null,
+          	handleReset: null
+          });
+          NETTRAFFIC_JS_EOF
+
+          # 9. Setel hak akses (permissions) seluruh file luci-app-nettraffic
+          chmod 755 package/base-files/files/usr/libexec/nettrafficd \
+                    package/base-files/files/usr/libexec/rpcd/nettraffic \
+                    package/base-files/files/etc/init.d/nettraffic \
+                    package/base-files/files/etc/uci-defaults/90_luci-app-nettraffic
+          chmod 644 package/base-files/files/etc/config/nettraffic \
+                    package/base-files/files/usr/share/luci/menu.d/luci-app-nettraffic.json \
+                    package/base-files/files/usr/share/rpcd/acl.d/luci-app-nettraffic.json \
+                    package/base-files/files/www/luci-static/resources/view/nettraffic/overview.js
 
       - name: Gunakan config.buildinfo Resmi ImmortalWrt 25.12.2 + Paket Tambahan
         working-directory: immortalwrt
@@ -337,6 +2786,11 @@ jobs:
           CONFIG_PACKAGE_irqbalance=y
           CONFIG_PACKAGE_kmod-tcp-bbr=y
           CONFIG_PACKAGE_kmod-nft-fullcone=y
+
+          # --- SmartDNS & Sertifikat SSL ---
+          CONFIG_PACKAGE_smartdns=y
+          CONFIG_PACKAGE_luci-app-smartdns=y
+          CONFIG_PACKAGE_ca-bundle=y
 
           # --- MWAN3 Load Balancing ---
           CONFIG_PACKAGE_mwan3=y
@@ -386,10 +2840,12 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: immortalwrt-25.12.2-e8820s-${{ github.run_number }}
-          name: ImmortalWrt 25.12.2 ZTE E8820S Max Performance + MWAN3 (Build #${{ github.run_number }})
+          name: ImmortalWrt 25.12.2 ZTE E8820S Max Performance + SmartDNS + NetTraffic (Build #${{ github.run_number }})
           body: |
             Custom build **ImmortalWrt v25.12.2** (kompatibel 100% dengan seluruh paket & `kmods` online ImmortalWrt) untuk **ZTE E8820S (BREED Layout HC5962)**:
-            - **Max Performance:** Native Fullcone NAT, TCP BBR + `fq_codel` + `tcp_notsent_lowat`, `irqbalance` + `packet_steering` 4-thread CPU, DNS cache 4096, & WiFi 5G `VHT80` + 802.11k/v roaming.
+            - **Max Performance:** Native Fullcone NAT, TCP BBR + `fq_codel` + `tcp_notsent_lowat`, `irqbalance` + `packet_steering` 4-thread CPU, & WiFi 5G `VHT80` + 802.11k/v roaming.
+            - **SmartDNS Dual-Engine:** Port `6053` (DoH/DoT anti-blokir) & Port `6054` (Dedicated Gaming DNS) + cache RAM 0ms.
+            - **Traffic Monitor (`luci-app-nettraffic`):** Terpasang otomatis di menu **Services → Traffic Monitor**.
             - **LAN IP:** `192.168.11.1` | **WiFi 2.4G & 5G:** Aktif (`ImmortalWrt`, tanpa password)
             - **MWAN3:** Load Balance (`wan1`–`wan4`, `wanusb`, `wwan`, `wwan2`)
             - **Auto FreeRAM:** `/usr/bin/freeram.sh` aktif otomatis setiap pukul `03:00`
