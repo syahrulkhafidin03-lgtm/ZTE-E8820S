@@ -1,15 +1,15 @@
-name: Build OpenWrt ZTE E8820S (BREED)
+name: Build ImmortalWrt ZTE E8820S (BREED)
 
 on:
   workflow_dispatch:
     inputs:
       branch:
-        description: 'Versi OpenWrt'
+        description: 'Versi Rilis ImmortalWrt'
         required: true
-        default: 'v25.12.6'
+        default: 'v25.12.2'
         type: choice
         options:
-          - v25.12.6
+          - v25.12.2
 
 permissions:
   contents: write
@@ -40,28 +40,28 @@ jobs:
             python3-pyelftools qemu-utils re2c rsync scons squashfs-tools subversion swig texinfo uglifyjs \
             upx-ucl unzip vim wget xmlto xxd zlib1g-dev zstd
 
-      - name: Clone Source OpenWrt v25.12.6
+      - name: Clone Source ImmortalWrt v25.12.2
         run: |
-          git clone --depth=1 -b v25.12.6 https://github.com/openwrt/openwrt.git openwrt
+          git clone --depth=1 -b v25.12.2 https://github.com/immortalwrt/immortalwrt.git immortalwrt
 
       - name: Cache Source & Ccache
         uses: actions/cache@v4
         with:
           path: |
-            openwrt/dl
-            openwrt/.ccache
-          key: openwrt-v25.12.6-official-${{ hashFiles('.github/workflows/build.yml') }}
+            immortalwrt/dl
+            immortalwrt/.ccache
+          key: immortalwrt-v25.12.2-final-${{ hashFiles('.github/workflows/build.yml') }}
           restore-keys: |
-            openwrt-v25.12.6-official-
+            immortalwrt-v25.12.2-final-
 
       - name: Update & Install Feeds
-        working-directory: openwrt
+        working-directory: immortalwrt
         run: |
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      - name: Terapkan Patch BREED, Max Performance, SmartDNS, NetTraffic & MWAN3
-        working-directory: openwrt
+      - name: Terapkan Patch BREED, Max Performance, SmartDNS & MWAN3
+        working-directory: immortalwrt
         run: |
           # 1. Timpa DTS dengan peta partisi BREED dari folder patch/
           cp -f ../patch/mt7621_zte_e8820s.dts target/linux/ramips/dts/mt7621_zte_e8820s.dts
@@ -91,10 +91,10 @@ jobs:
             sed -i '/case "$board" in/r ../patch/upgrade.txt' "$UPGRADE_FILE"
           fi
 
-          # 4. Tanamkan Kernel Sysctl Tuning (TCP BBR, fq_codel, Anti-Jitter & RAM Guard)
+          # 4. Tanamkan Kernel Sysctl Tuning (BBR, fq_codel, Zero-Spike Latency & Device Health Guard)
           mkdir -p package/base-files/files/etc/sysctl.d
           cat <<'SYSCTL_EOF' > package/base-files/files/etc/sysctl.d/99-performance.conf
-          # --- TCP BBR & Fair Queue CoDel (Anti-Lag & High Throughput) ---
+          # --- TCP BBR & Fair Queue CoDel (Ultra-Low Latency & Anti-Spike) ---
           net.core.default_qdisc=fq_codel
           net.ipv4.tcp_congestion_control=bbr
           net.ipv4.tcp_fastopen=3
@@ -108,7 +108,7 @@ jobs:
           net.ipv4.tcp_keepalive_intvl=15
           net.ipv4.tcp_keepalive_probes=4
 
-          # --- Buffer Jaringan & NAPI Polling Optimal untuk MT7621 (256MB RAM) ---
+          # --- Buffer Jaringan & NAPI Polling Optimal untuk MT7621A (256MB RAM) ---
           net.core.netdev_max_backlog=4096
           net.core.netdev_budget=600
           net.core.netdev_budget_usecs=8000
@@ -125,12 +125,17 @@ jobs:
           net.ipv4.neigh.default.gc_thresh2=1024
           net.ipv4.neigh.default.gc_thresh3=2048
 
-          # --- Conntrack Multi-WAN & Perlindungan RAM ---
+          # --- Conntrack Multi-Client & Perlindungan Kesehatan RAM/CPU ---
           net.netfilter.nf_conntrack_max=32768
-          net.netfilter.nf_conntrack_tcp_timeout_established=1800
-          net.netfilter.nf_conntrack_tcp_timeout_time_wait=30
+          net.netfilter.nf_conntrack_tcp_timeout_established=900
+          net.netfilter.nf_conntrack_tcp_timeout_time_wait=15
+          net.netfilter.nf_conntrack_tcp_timeout_close_wait=15
+          net.netfilter.nf_conntrack_tcp_timeout_fin_wait=30
+          net.netfilter.nf_conntrack_udp_timeout=30
+          net.netfilter.nf_conntrack_udp_timeout_stream=90
           vm.min_free_kbytes=16384
           vm.swappiness=10
+          vm.vfs_cache_pressure=150
           SYSCTL_EOF
 
           # 5. Tanamkan Wi-Fi Low-Latency AQL Tuning (Anti-Bufferbloat Udara MT76)
@@ -150,38 +155,547 @@ jobs:
           WIFI_AQL_EOF
           chmod 755 package/base-files/files/etc/hotplug.d/ieee80211/99-mt76-lowlatency
 
-          # 6. Tanamkan /usr/bin/freeram.sh permanen ke dalam firmware
+          # 6. Tanamkan nftables DSCP Priority agar Game di LAN 1 (wan1) Bebas Gangguan Download
+          mkdir -p package/base-files/files/etc/nftables.d
+          cat <<'NFT_GAME_EOF' > package/base-files/files/etc/nftables.d/10-gaming-priority.nft
+          chain gaming_dscp_prio {
+              type filter hook postrouting priority mangle; policy accept;
+              oifname "lan1" udp dport { 5000-5600, 7000-9000, 10000-20000, 27000-27100, 30000-30100 } ip dscp set ef
+              oifname "lan1" tcp dport { 5000-5600, 7000-9000, 30000-30100 } ip dscp set ef
+          }
+          NFT_GAME_EOF
+
+          # 7. Tanamkan Init Service Gaming IPSet (START=10 sebelum MWAN3 & SmartDNS)
+          mkdir -p package/base-files/files/etc/init.d
+          cat <<'IPSET_INIT_EOF' > package/base-files/files/etc/init.d/gaming-ipset
+          #!/bin/sh /etc/rc.common
+
+          START=10
+          STOP=95
+
+          start() {
+              command -v ipset >/dev/null 2>&1 || return 0
+              ipset create gaming_ips hash:ip family inet timeout 86400 -exist 2>/dev/null || true
+          }
+
+          restart() {
+              start
+          }
+          IPSET_INIT_EOF
+          chmod 755 package/base-files/files/etc/init.d/gaming-ipset
+
+          # 8. Tanamkan /usr/bin/freeram.sh (Pembersih RAM, Defrag Memori, Log & Sampah Sistem Jam 03:00)
           mkdir -p package/base-files/files/usr/bin
           cat <<'FREERAM_EOF' > package/base-files/files/usr/bin/freeram.sh
           #!/bin/sh
-          # Script Pembersih RAM & Log
+          # Script Pembersih RAM, Defrag Memori, Cache Sampah & Log (Aman untuk Service Aktif)
+
+          MEM_BEFORE=$(awk '/MemAvailable:/ {print $2}' /proc/meminfo 2>/dev/null)
+
+          # 1. Sinkronisasi & Bebaskan Cache RAM + Defragmentasi Memori
           sync
-          echo 3 > /proc/sys/vm/drop_caches
-          rm -rf /tmp/log/*
-          logger "RAM and Logs have been cleared by Maintenance Script (3 AM)"
+          echo 1 > /proc/sys/vm/compact_memory 2>/dev/null || true
+          echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
+
+          # 2. Bersihkan Log Tanpa Memutus File Descriptor Service Aktif
+          if [ -d /tmp/log ]; then
+              find /tmp/log -type f \( -name "*.gz" -o -name "*.old" -o -name "*.1" \) -delete 2>/dev/null || true
+              find /tmp/log -type f -exec truncate -s 0 {} + 2>/dev/null || true
+          fi
+
+          # 3. Bersihkan Sampah Cache Sementara LuCI, APK & File Temp
+          rm -rf /tmp/*.tmp /tmp/*.bak /tmp/luci-indexcache* /tmp/luci-modulecache/* /tmp/apk-cache/* 2>/dev/null || true
+
+          # 4. Bersihkan Cache Tabel ARP / Neighbor yang Sudah Usang
+          ip -s -s neigh flush all >/dev/null 2>&1 || true
+
+          MEM_AFTER=$(awk '/MemAvailable:/ {print $2}' /proc/meminfo 2>/dev/null)
+          logger -t maintenance "Auto-Clean 03:00 selesai: RAM tersedia ${MEM_BEFORE}KB -> ${MEM_AFTER}KB, sampah & log dibersihkan."
           FREERAM_EOF
           chmod 755 package/base-files/files/usr/bin/freeram.sh
 
-          # 7. Tanamkan Custom Package: luci-app-nettraffic (Sesuai Struktur OpenWrt)
+          # 9. Tanamkan skrip uci-defaults permanen (Fullcone NAT, Multi-Core, WiFi WPA2, SmartDNS, MWAN3 & Cron)
+          mkdir -p package/base-files/files/etc/uci-defaults
+          cat <<'OUTER_EOF' > package/base-files/files/etc/uci-defaults/999-custom-settings
+          #!/bin/sh
+
+          # --- 1. MULTI-CORE CPU PACKET STEERING & IRQBALANCE ---
+          uci set network.globals=globals
+          uci set network.globals.packet_steering='1'
+
+          if uci -q get irqbalance.irqbalance >/dev/null; then
+              uci set irqbalance.irqbalance.enabled='1'
+              uci commit irqbalance
+          fi
+
+          # --- 2. SETUP LAN & LEPASKAN LAN1-LAN4 DARI BR-LAN ---
+          uci set network.lan=interface
+          uci set network.lan.proto='static'
+          uci set network.lan.ipaddr='192.168.11.1'
+          uci set network.lan.netmask='255.255.255.0'
+
+          for i in 1 2 3 4; do
+              uci del_list network.@device[0].ports="lan$i" 2>/dev/null
+          done
+          uci set network.@device[0].bridge_empty='1'
+
+          # --- 3. NETWORK INTERFACES (WAN1-WAN4, USB, WWAN, WWAN2) ---
+          for i in 1 2 3 4; do
+              uci set network.wan$i=interface
+              uci set network.wan$i.device="lan$i"
+              uci set network.wan$i.proto='dhcp'
+              uci set network.wan$i.metric="$((i*10))"
+              uci set network.wan$i.peerdns='0'
+              uci add_list network.wan$i.dns='1.1.1.1'
+              uci add_list network.wan$i.dns='8.8.8.8'
+          done
+
+          uci set network.wanusb=interface
+          uci set network.wanusb.device='usb0'
+          uci set network.wanusb.proto='dhcp'
+          uci set network.wanusb.metric='80'
+          uci set network.wanusb.peerdns='0'
+
+          uci set network.wwan=interface
+          uci set network.wwan.proto='dhcp'
+          uci set network.wwan.metric='60'
+          uci set network.wwan.peerdns='0'
+
+          uci set network.wwan2=interface
+          uci set network.wwan2.proto='dhcp'
+          uci set network.wwan2.metric='70'
+          uci set network.wwan2.peerdns='0'
+
+          uci delete network.wan 2>/dev/null
+          uci delete network.wan6 2>/dev/null
+          uci commit network
+
+          # --- 4. FIREWALL ZONES & IMMORTALWRT NATIVE FULLCONE NAT ---
+          uci set firewall.@defaults[0].fullcone='1'
+          uci set firewall.@defaults[0].flow_offloading='0'
+          uci set firewall.@defaults[0].flow_offloading_hw='0'
+
+          uci delete firewall.@zone[1].network 2>/dev/null
+          for iface in wan wan1 wan2 wan3 wan4 wanusb wwan wwan2; do
+              uci add_list firewall.@zone[1].network="$iface"
+          done
+          uci commit firewall
+
+          # --- 5. MWAN3 SMART ROUTING: GAME KUNCI LAN 1 (wan1) + NON-GAME LOAD BALANCE SEMUA PORT ---
+          /etc/init.d/gaming-ipset enable 2>/dev/null || true
+          /etc/init.d/gaming-ipset start 2>/dev/null || true
+
+          cat <<'MWAN3_EOF' > /etc/config/mwan3
+          config globals 'globals'
+          	option mmx_mask '0x3F00'
+
+          config interface 'wan1'
+          	option enabled '1'
+          	list track_ip '8.8.8.8'
+          	list track_ip '1.1.1.1'
+          	list track_ip '9.9.9.9'
+          	list track_ip '1.0.0.1'
+          	option track_method 'ping'
+          	option reliability '2'
+          	option count '1'
+          	option timeout '1'
+          	option interval '2'
+          	option down '2'
+          	option up '3'
+          	option check_operstate '1'
+
+          config interface 'wan2'
+          	option enabled '1'
+          	list track_ip '8.8.8.8'
+          	list track_ip '1.1.1.1'
+          	list track_ip '9.9.9.9'
+          	list track_ip '1.0.0.1'
+          	option track_method 'ping'
+          	option reliability '2'
+          	option count '1'
+          	option timeout '1'
+          	option interval '2'
+          	option down '2'
+          	option up '3'
+          	option check_operstate '1'
+
+          config interface 'wan3'
+          	option enabled '1'
+          	list track_ip '8.8.8.8'
+          	list track_ip '1.1.1.1'
+          	list track_ip '9.9.9.9'
+          	list track_ip '1.0.0.1'
+          	option track_method 'ping'
+          	option reliability '2'
+          	option count '1'
+          	option timeout '1'
+          	option interval '2'
+          	option down '2'
+          	option up '3'
+          	option check_operstate '1'
+
+          config interface 'wan4'
+          	option enabled '1'
+          	list track_ip '8.8.8.8'
+          	list track_ip '1.1.1.1'
+          	list track_ip '9.9.9.9'
+          	list track_ip '1.0.0.1'
+          	option track_method 'ping'
+          	option reliability '2'
+          	option count '1'
+          	option timeout '1'
+          	option interval '2'
+          	option down '2'
+          	option up '3'
+          	option check_operstate '1'
+
+          config interface 'wwan'
+          	option enabled '1'
+          	list track_ip '8.8.8.8'
+          	list track_ip '1.1.1.1'
+          	list track_ip '9.9.9.9'
+          	list track_ip '1.0.0.1'
+          	option track_method 'ping'
+          	option reliability '2'
+          	option count '1'
+          	option timeout '1'
+          	option interval '2'
+          	option down '2'
+          	option up '3'
+          	option check_operstate '1'
+
+          config interface 'wwan2'
+          	option enabled '1'
+          	list track_ip '8.8.8.8'
+          	list track_ip '1.1.1.1'
+          	list track_ip '9.9.9.9'
+          	list track_ip '1.0.0.1'
+          	option track_method 'ping'
+          	option reliability '2'
+          	option count '1'
+          	option timeout '1'
+          	option interval '2'
+          	option down '2'
+          	option up '3'
+          	option check_operstate '1'
+
+          config interface 'wanusb'
+          	option enabled '1'
+          	list track_ip '8.8.8.8'
+          	list track_ip '1.1.1.1'
+          	list track_ip '9.9.9.9'
+          	list track_ip '1.0.0.1'
+          	option track_method 'ping'
+          	option reliability '2'
+          	option count '1'
+          	option timeout '1'
+          	option interval '2'
+          	option down '2'
+          	option up '3'
+          	option check_operstate '1'
+
+          # --- MEMBER KHUSUS GAME (PORT LAN 1 / wan1) ---
+          config member 'wan1_game_only'
+          	option interface 'wan1'
+          	option metric '1'
+          	option weight '10'
+
+          # --- MEMBER LOAD BALANCE MERATA SEMUA PORT ---
+          config member 'wan1_m1_w1'
+          	option interface 'wan1'
+          	option metric '1'
+          	option weight '1'
+
+          config member 'wan2_m1_w1'
+          	option interface 'wan2'
+          	option metric '1'
+          	option weight '1'
+
+          config member 'wan3_m1_w1'
+          	option interface 'wan3'
+          	option metric '1'
+          	option weight '1'
+
+          config member 'wan4_m1_w1'
+          	option interface 'wan4'
+          	option metric '1'
+          	option weight '1'
+
+          config member 'wwan_m1_w1'
+          	option interface 'wwan'
+          	option metric '1'
+          	option weight '1'
+
+          config member 'wwan2_m1_w1'
+          	option interface 'wwan2'
+          	option metric '1'
+          	option weight '1'
+
+          config member 'wanusb_m1_w1'
+          	option interface 'wanusb'
+          	option metric '1'
+          	option weight '1'
+
+          # --- POLICY 1: KUNCI MUTLAK KE PORT LAN 1 (wan1) ---
+          config policy 'gaming_wan1_only'
+          	list use_member 'wan1_game_only'
+          	option last_resort 'default'
+
+          # --- POLICY 2: GABUNG TRAFIK MERATA DI SEMUA PORT (LAN 1-4, USB, WWAN, WWAN2) ---
+          config policy 'balanced'
+          	list use_member 'wan1_m1_w1'
+          	list use_member 'wan2_m1_w1'
+          	list use_member 'wan3_m1_w1'
+          	list use_member 'wan4_m1_w1'
+          	list use_member 'wwan_m1_w1'
+          	list use_member 'wwan2_m1_w1'
+          	list use_member 'wanusb_m1_w1'
+          	option last_resort 'unreachable'
+
+          # --- RULES PRIORITAS TINGGI: SEMUA GAME KUNCI KE LAN 1 (wan1) ---
+          config rule 'gaming_domain_ipset'
+          	option ipset 'gaming_ips'
+          	option sticky '1'
+          	option timeout '1800'
+          	option use_policy 'gaming_wan1_only'
+
+          config rule 'gaming_udp_ports'
+          	option dest_port '5000:5600,7000:9000,10000:20000,27000:27100,30000:30100'
+          	option proto 'udp'
+          	option sticky '1'
+          	option timeout '1800'
+          	option use_policy 'gaming_wan1_only'
+
+          config rule 'gaming_tcp_ports'
+          	option dest_port '5000:5600,7000:9000,30000:30100'
+          	option proto 'tcp'
+          	option sticky '1'
+          	option timeout '1800'
+          	option use_policy 'gaming_wan1_only'
+
+          # --- RULES NON-GAME: SOSMED, WEBSITE, DOWNLOAD, APK, SPEEDTEST LOAD BALANCE ---
+          config rule 'https_sticky'
+          	option dest_port '443'
+          	option proto 'tcp'
+          	option sticky '1'
+          	option timeout '600'
+          	option use_policy 'balanced'
+
+          config rule 'quic_http3_sticky'
+          	option dest_port '443'
+          	option proto 'udp'
+          	option sticky '1'
+          	option timeout '300'
+          	option use_policy 'balanced'
+
+          config rule 'default_rule_v4'
+          	option dest_ip '0.0.0.0/0'
+          	option use_policy 'balanced'
+          MWAN3_EOF
+          uci commit mwan3
+
+          # --- 6. WIFI 2.4G & 5G PRO TUNING (VHT80, WMM, SHORT-GI, 802.11k/v, PASSWORD: internet) ---
+          for r in 0 1; do
+              BAND=$(uci -q get wireless.radio${r}.band)
+              uci set wireless.radio${r}.disabled='0'
+              uci set wireless.radio${r}.country='ID'
+              uci set wireless.radio${r}.channel='auto'
+              uci set wireless.radio${r}.legacy_rates='0'
+              uci set wireless.radio${r}.beacon_int='100'
+              if [ "$BAND" = "5g" ]; then
+                  uci set wireless.radio${r}.htmode='VHT80'
+                  uci set wireless.radio${r}.txpower='20'
+              else
+                  uci set wireless.radio${r}.htmode='HT20'
+                  uci set wireless.radio${r}.txpower='18'
+              fi
+
+              uci set wireless.default_radio${r}=wifi-iface
+              uci set wireless.default_radio${r}.device="radio${r}"
+              uci set wireless.default_radio${r}.network='lan'
+              uci set wireless.default_radio${r}.mode='ap'
+              uci set wireless.default_radio${r}.ssid='ImmortalWrt'
+              uci set wireless.default_radio${r}.encryption='psk2'
+              uci set wireless.default_radio${r}.key='internet'
+              uci set wireless.default_radio${r}.disabled='0'
+              uci set wireless.default_radio${r}.wmm='1'
+              uci set wireless.default_radio${r}.dtim_period='2'
+              uci set wireless.default_radio${r}.short_gi_20='1'
+              uci set wireless.default_radio${r}.short_gi_40='1'
+              uci set wireless.default_radio${r}.short_gi_80='1'
+              uci set wireless.default_radio${r}.disassoc_low_ack='1'
+              uci set wireless.default_radio${r}.ieee80211k='1'
+              uci set wireless.default_radio${r}.bss_transition='1'
+          done
+          uci commit wireless
+
+          # --- 7. RAPIKAN FEED APK & SINKRONISASI SMARTDNS DUAL-ENGINE + IPSET MWAN3 ---
+          sed -i 's|^\(.*mipsel_24kc/video/packages.adb\)|#\1|' /etc/apk/repositories.d/*.list 2>/dev/null || true
+
+          if command -v smartdns >/dev/null 2>&1; then
+              mkdir -p /etc/smartdns
+              while uci -q delete smartdns.@smartdns[0]; do :; done
+              uci add smartdns smartdns >/dev/null
+              uci set smartdns.@smartdns[0].enabled='1'
+              uci set smartdns.@smartdns[0].server_name='smartdns-e8820s'
+              uci set smartdns.@smartdns[0].port='6053'
+              uci set smartdns.@smartdns[0].auto_set_dnsmasq='0'
+              uci set smartdns.@smartdns[0].ipv6_server='0'
+              uci set smartdns.@smartdns[0].dualstack_ip_selection='0'
+              uci set smartdns.@smartdns[0].prefetch_domain='1'
+              uci set smartdns.@smartdns[0].serve_expired='1'
+              uci set smartdns.@smartdns[0].cache_size='16384'
+              uci set smartdns.@smartdns[0].rr_ttl_min='60'
+              uci set smartdns.@smartdns[0].rr_ttl_max='86400'
+              uci set smartdns.@smartdns[0].force_aaaa_soa='1'
+              uci set smartdns.@smartdns[0].speed_check_mode='ping,tcp:443,tcp:80'
+              uci set smartdns.@smartdns[0].response_mode='first-ping'
+              uci commit smartdns
+
+              cat << 'CONF' > /etc/smartdns/custom.conf
+          # --- CACHE RAM 0MS & ANTI-AUS FLASH NAND ---
+          cache-persist yes
+          cache-file /tmp/smartdns.cache
+          serve-expired-ttl 86400
+          serve-expired-reply-ttl 3
+          tcp-idle-time 120
+          max-reply-ip-num 2
+
+          # --- LISTENER PORT 6054: KHUSUS DEDICATED GAMING ---
+          bind :6054 -group gaming
+
+          # ==========================================================
+          # ENGINE 1: DNS SUPER CEPAT & JEBOL SEMUA (DEFAULT PORT 6053)
+          # Menggunakan DoH/DoT IP langsung (Anti-DPI & Anti-Blokir ISP)
+          # ==========================================================
+          server-https https://1.1.1.1/dns-query
+          server-https https://1.0.0.1/dns-query
+          server-https https://94.140.14.140/dns-query
+          server-https https://94.140.14.141/dns-query
+          server-https https://9.9.9.9/dns-query
+          server-https https://8.8.8.8/dns-query
+          server-tls 1.1.1.1:853
+          server-tls 94.140.14.140:853
+
+          # ==========================================================
+          # ENGINE 2: DNS GAMING ULTRA-LOW LATENCY (GROUP: gaming)
+          # Jalur respon tercepat + IPv4 murni anti-jitter
+          # ==========================================================
+          server 1.1.1.1 -group gaming -exclude-default-group
+          server 1.0.0.1 -group gaming -exclude-default-group
+          server 8.8.8.8 -group gaming -exclude-default-group
+          server 8.8.4.4 -group gaming -exclude-default-group
+          server 9.9.9.11 -group gaming -exclude-default-group
+          server 208.67.222.222 -group gaming -exclude-default-group
+          server-tls 1.1.1.1:853 -group gaming -exclude-default-group
+          server-tls 1.0.0.1:853 -group gaming -exclude-default-group
+
+          # --- SINKRONISASI NTP COLD-BOOT SYNC ---
+          nameserver /pool.ntp.org/gaming
+          nameserver /time.google.com/gaming
+          nameserver /time.cloudflare.com/gaming
+          nameserver /ntp.bmkg.go.id/gaming
+
+          # --- SINKRONISASI DOMAIN GAME -> ENGINE GAMING + IPSET MWAN3 (KUNCI KE LAN 1 / wan1) ---
+          nameserver /mobilelegends.com/gaming
+          ipset /mobilelegends.com/gaming_ips
+          nameserver /moonton.com/gaming
+          ipset /moonton.com/gaming_ips
+          nameserver /youngjoygame.com/gaming
+          ipset /youngjoygame.com/gaming_ips
+          nameserver /bytedance.com/gaming
+          ipset /bytedance.com/gaming_ips
+          nameserver /garena.com/gaming
+          ipset /garena.com/gaming_ips
+          nameserver /garenanow.com/gaming
+          ipset /garenanow.com/gaming_ips
+          nameserver /tencent.com/gaming
+          ipset /tencent.com/gaming_ips
+          nameserver /pubgmobile.com/gaming
+          ipset /pubgmobile.com/gaming_ips
+          nameserver /proximabeta.com/gaming
+          ipset /proximabeta.com/gaming_ips
+          nameserver /riotgames.com/gaming
+          ipset /riotgames.com/gaming_ips
+          nameserver /valorant.com/gaming
+          ipset /valorant.com/gaming_ips
+          nameserver /steampowered.com/gaming
+          ipset /steampowered.com/gaming_ips
+          nameserver /steamcommunity.com/gaming
+          ipset /steamcommunity.com/gaming_ips
+          nameserver /steamcontent.com/gaming
+          ipset /steamcontent.com/gaming_ips
+          nameserver /roblox.com/gaming
+          ipset /roblox.com/gaming_ips
+          nameserver /rbxcdn.com/gaming
+          ipset /rbxcdn.com/gaming_ips
+          nameserver /supercell.com/gaming
+          ipset /supercell.com/gaming_ips
+          nameserver /epicgames.com/gaming
+          ipset /epicgames.com/gaming_ips
+          nameserver /hoyoverse.com/gaming
+          ipset /hoyoverse.com/gaming_ips
+          nameserver /mihoyo.com/gaming
+          ipset /mihoyo.com/gaming_ips
+          nameserver /activision.com/gaming
+          ipset /activision.com/gaming_ips
+          nameserver /callofduty.com/gaming
+          ipset /callofduty.com/gaming_ips
+          nameserver /blizzard.com/gaming
+          ipset /blizzard.com/gaming_ips
+          nameserver /ea.com/gaming
+          ipset /ea.com/gaming_ips
+          nameserver /konami.com/gaming
+          ipset /konami.com/gaming_ips
+          nameserver /minecraft.net/gaming
+          ipset /minecraft.net/gaming_ips
+          nameserver /mojang.com/gaming
+          ipset /mojang.com/gaming_ips
+          CONF
+
+              uci set dhcp.@dnsmasq[0].noresolv='1'
+              uci set dhcp.@dnsmasq[0].cachesize='0'
+              uci set dhcp.@dnsmasq[0].dns_forward_max='300'
+              uci -q delete dhcp.@dnsmasq[0].server || true
+              uci add_list dhcp.@dnsmasq[0].server='127.0.0.1#6053'
+              uci commit dhcp
+
+              /etc/init.d/smartdns enable 2>/dev/null || true
+          fi
+
+          # --- 8. AUTO FREERAM & CLEANER CRONTAB (SETIAP JAM 03:00) ---
+          mkdir -p /etc/crontabs
+          touch /etc/crontabs/root
+          sed -i '/freeram.sh/d' /etc/crontabs/root
+          echo "0 3 * * * /usr/bin/freeram.sh" >> /etc/crontabs/root
+          /etc/init.d/cron enable 2>/dev/null || true
+
+          exit 0
+          OUTER_EOF
+          chmod +x package/base-files/files/etc/uci-defaults/999-custom-settings
+
+      - name: Tanamkan Custom Package luci-app-nettraffic
+        working-directory: immortalwrt
+        run: |
           mkdir -p package/base-files/files/etc/config \
                    package/base-files/files/etc/init.d \
                    package/base-files/files/etc/uci-defaults \
+                   package/base-files/files/etc/nettraffic \
                    package/base-files/files/usr/libexec/rpcd \
                    package/base-files/files/usr/share/luci/menu.d \
                    package/base-files/files/usr/share/rpcd/acl.d \
                    package/base-files/files/www/luci-static/resources/view/nettraffic
 
-          cat <<'NT_CONF_EOF' > package/base-files/files/etc/config/nettraffic
+          # 1. /etc/config/nettraffic (Auto-detect multi-WAN uplinks & LAN1-4 ports)
+          cat <<'NT_CFG_EOF' > package/base-files/files/etc/config/nettraffic
           config settings 'settings'
           	option interval '2'
           	option save_interval '60'
           	option history '60'
-          	# Biarkan interfaces kosong agar auto-detect seluruh uplink MWAN3 (wan1-wan4, usb0, wwan)
-          	# option interfaces 'lan1 lan2 lan3'
           	option ports 'lan1 lan2 lan3 lan4'
-          NT_CONF_EOF
-          chmod 644 package/base-files/files/etc/config/nettraffic
+          NT_CFG_EOF
 
+          # 2. /etc/init.d/nettraffic
           cat <<'NT_INIT_EOF' > package/base-files/files/etc/init.d/nettraffic
           #!/bin/sh /etc/rc.common
 
@@ -204,12 +718,12 @@ jobs:
           	restart
           }
           NT_INIT_EOF
-          chmod 755 package/base-files/files/etc/init.d/nettraffic
 
+          # 3. /etc/uci-defaults/90_luci-app-nettraffic
           cat <<'NT_UCI_EOF' > package/base-files/files/etc/uci-defaults/90_luci-app-nettraffic
           #!/bin/sh
 
-          mkdir -p /etc/nettraffic
+          mkdir -p /etc/nettraffic /var/run/nettraffic
 
           touch /etc/sysupgrade.conf 2>/dev/null || true
           if [ -f /etc/sysupgrade.conf ] && ! grep -q '^/etc/nettraffic/' /etc/sysupgrade.conf 2>/dev/null; then
@@ -220,8 +734,8 @@ jobs:
           /etc/init.d/rpcd restart >/dev/null 2>&1 || true
           exit 0
           NT_UCI_EOF
-          chmod 755 package/base-files/files/etc/uci-defaults/90_luci-app-nettraffic
 
+          # 4. /usr/libexec/rpcd/nettraffic
           cat <<'NT_RPCD_EOF' > package/base-files/files/usr/libexec/rpcd/nettraffic
           #!/bin/sh
           # rpcd plugin for luci-app-nettraffic.
@@ -262,9 +776,9 @@ jobs:
           		;;
           esac
           NT_RPCD_EOF
-          chmod 755 package/base-files/files/usr/libexec/rpcd/nettraffic
 
-          cat <<'NT_DAEMON_EOF' > package/base-files/files/usr/libexec/nettrafficd
+          # 5. /usr/libexec/nettrafficd
+          cat <<'NETTRAFFICD_EOF' > package/base-files/files/usr/libexec/nettrafficd
           #!/bin/sh
           # nettrafd - small persistent WAN traffic monitor for LuCI.
 
@@ -395,7 +909,7 @@ jobs:
           	fi
 
           	if command -v ubus >/dev/null 2>&1; then
-          		for _if in wan wan1 wan2 wan3 wan4 wanusb wwan wwan2 wan6 wan_6; do
+          		for _if in wan wan6 wan_6 wan1 wan2 wan3 wan4 wanusb wwan wwan2; do
           			_l3="$(ubus call "network.interface.$_if" status 2>/dev/null | \
           				sed -n 's/.*"l3_device"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | \
           				head -n 1)"
@@ -404,7 +918,7 @@ jobs:
           	fi
 
           	if [ -z "$WAN_DEVS" ] && command -v uci >/dev/null 2>&1; then
-          		for _if in wan wan1 wan2 wan3 wan4 wanusb wwan wwan2 wan6; do
+          		for _if in wan wan6 wan1 wan2 wan3 wan4 wanusb wwan wwan2; do
           			_proto="$(uci -q get "network.$_if.proto" 2>/dev/null)"
           			if [ "$_proto" = "pppoe" ]; then
           				add_wan pppoe-wan
@@ -1368,9 +1882,9 @@ jobs:
           rm -f "$PIDFILE"
           log "stopped"
           exit 0
-          NT_DAEMON_EOF
-          chmod 755 package/base-files/files/usr/libexec/nettrafficd
+          NETTRAFFICD_EOF
 
+          # 6. /usr/share/luci/menu.d/luci-app-nettraffic.json
           cat <<'NT_MENU_EOF' > package/base-files/files/usr/share/luci/menu.d/luci-app-nettraffic.json
           {
           	"admin/services/nettraffic": {
@@ -1386,8 +1900,8 @@ jobs:
           	}
           }
           NT_MENU_EOF
-          chmod 644 package/base-files/files/usr/share/luci/menu.d/luci-app-nettraffic.json
 
+          # 7. /usr/share/rpcd/acl.d/luci-app-nettraffic.json
           cat <<'NT_ACL_EOF' > package/base-files/files/usr/share/rpcd/acl.d/luci-app-nettraffic.json
           {
           	"luci-app-nettraffic": {
@@ -1405,9 +1919,9 @@ jobs:
           	}
           }
           NT_ACL_EOF
-          chmod 644 package/base-files/files/usr/share/rpcd/acl.d/luci-app-nettraffic.json
 
-          cat <<'NT_VIEW_EOF' > package/base-files/files/www/luci-static/resources/view/nettraffic/overview.js
+          # 8. /www/luci-static/resources/view/nettraffic/overview.js
+          cat <<'NETTRAFFIC_JS_EOF' > package/base-files/files/www/luci-static/resources/view/nettraffic/overview.js
           'use strict';
           'require view';
           'require rpc';
@@ -1660,7 +2174,9 @@ jobs:
           	try {
           		window.localStorage.setItem(THEME_KEY, id);
           	}
-          	catch (e) {}
+          	catch (e) {
+          		/* private mode: theme still works for this session */
+          	}
           }
 
           function el(tag, attrs, children) {
@@ -2510,396 +3026,24 @@ jobs:
           	handleSave: null,
           	handleReset: null
           });
-          NT_VIEW_EOF
-          chmod 644 package/base-files/files/www/luci-static/resources/view/nettraffic/overview.js
+          NETTRAFFIC_JS_EOF
 
-          # 8. Tanamkan SmartDNS Dual Engine (Port 6053 Jebol Semua + Port 6054 Gaming 0ms)
-          cat <<'SMARTDNS_UCI_EOF' > package/base-files/files/etc/uci-defaults/990-smartdns-setup
-          #!/bin/sh
+          # 9. Setel hak akses (permissions) seluruh file luci-app-nettraffic
+          chmod 755 package/base-files/files/usr/libexec/nettrafficd \
+                    package/base-files/files/usr/libexec/rpcd/nettraffic \
+                    package/base-files/files/etc/init.d/nettraffic \
+                    package/base-files/files/etc/uci-defaults/90_luci-app-nettraffic
+          chmod 644 package/base-files/files/etc/config/nettraffic \
+                    package/base-files/files/usr/share/luci/menu.d/luci-app-nettraffic.json \
+                    package/base-files/files/usr/share/rpcd/acl.d/luci-app-nettraffic.json \
+                    package/base-files/files/www/luci-static/resources/view/nettraffic/overview.js
 
-          mkdir -p /etc/smartdns
-          while uci -q delete smartdns.@smartdns[0]; do :; done
-          uci add smartdns smartdns >/dev/null
-          uci set smartdns.@smartdns[0].enabled='1'
-          uci set smartdns.@smartdns[0].server_name='smartdns-e8820s'
-          uci set smartdns.@smartdns[0].port='6053'
-          uci set smartdns.@smartdns[0].auto_set_dnsmasq='0'
-          uci set smartdns.@smartdns[0].ipv6_server='0'
-          uci set smartdns.@smartdns[0].dualstack_ip_selection='0'
-          uci set smartdns.@smartdns[0].prefetch_domain='1'
-          uci set smartdns.@smartdns[0].serve_expired='1'
-          uci set smartdns.@smartdns[0].cache_size='16384'
-          uci set smartdns.@smartdns[0].rr_ttl_min='60'
-          uci set smartdns.@smartdns[0].rr_ttl_max='86400'
-          uci set smartdns.@smartdns[0].force_aaaa_soa='1'
-          uci set smartdns.@smartdns[0].speed_check_mode='ping,tcp:443,tcp:80'
-          uci set smartdns.@smartdns[0].response_mode='first-ping'
-          uci commit smartdns
-
-          cat <<'CONF' > /etc/smartdns/custom.conf
-          # --- CACHE RAM 0MS & ANTI-AUS FLASH NAND ---
-          cache-persist yes
-          cache-file /tmp/smartdns.cache
-          serve-expired-ttl 86400
-          serve-expired-reply-ttl 3
-          tcp-idle-time 120
-          max-reply-ip-num 2
-
-          # --- LISTENER PORT 6054: KHUSUS DEDICATED GAMING ---
-          bind :6054 -group gaming
-
-          # ==========================================================
-          # ENGINE 1: DNS SUPER CEPAT & JEBOL SEMUA (DEFAULT PORT 6053)
-          # Menggunakan DoH/DoT IP langsung (Anti-DPI & Anti-Blokir ISP)
-          # ==========================================================
-          server-https https://1.1.1.1/dns-query
-          server-https https://1.0.0.1/dns-query
-          server-https https://94.140.14.140/dns-query
-          server-https https://94.140.14.141/dns-query
-          server-https https://9.9.9.9/dns-query
-          server-https https://8.8.8.8/dns-query
-          server-tls 1.1.1.1:853
-          server-tls 94.140.14.140:853
-
-          # ==========================================================
-          # ENGINE 2: DNS GAMING ULTRA-LOW LATENCY (GROUP: gaming)
-          # Jalur respon tercepat + IPv4 murni anti-jitter
-          # ==========================================================
-          server 1.1.1.1 -group gaming -exclude-default-group
-          server 1.0.0.1 -group gaming -exclude-default-group
-          server 8.8.8.8 -group gaming -exclude-default-group
-          server 8.8.4.4 -group gaming -exclude-default-group
-          server 9.9.9.11 -group gaming -exclude-default-group
-          server 208.67.222.222 -group gaming -exclude-default-group
-          server-tls 1.1.1.1:853 -group gaming -exclude-default-group
-          server-tls 1.0.0.1:853 -group gaming -exclude-default-group
-
-          # --- AUTO-ROUTING NTP (COLD-BOOT SYNC) & DOMAIN GAME ---
-          nameserver /pool.ntp.org/gaming
-          nameserver /mobilelegends.com/gaming
-          nameserver /moonton.com/gaming
-          nameserver /youngjoygame.com/gaming
-          nameserver /bytedance.com/gaming
-          nameserver /garena.com/gaming
-          nameserver /garenanow.com/gaming
-          nameserver /tencent.com/gaming
-          nameserver /pubgmobile.com/gaming
-          nameserver /proximabeta.com/gaming
-          nameserver /riotgames.com/gaming
-          nameserver /valorant.com/gaming
-          nameserver /steampowered.com/gaming
-          nameserver /steamcommunity.com/gaming
-          nameserver /steamcontent.com/gaming
-          nameserver /roblox.com/gaming
-          nameserver /rbxcdn.com/gaming
-          nameserver /supercell.com/gaming
-          nameserver /epicgames.com/gaming
-          nameserver /hoyoverse.com/gaming
-          nameserver /mihoyo.com/gaming
-          CONF
-
-          /etc/init.d/smartdns enable >/dev/null 2>&1 || true
-          exit 0
-          SMARTDNS_UCI_EOF
-          chmod 755 package/base-files/files/etc/uci-defaults/990-smartdns-setup
-
-          # 9. Tanamkan skrip uci-defaults permanen (Multi-Core, WiFi Pro, LAN, MWAN3, DNS & Crontab)
-          cat <<'OUTER_EOF' > package/base-files/files/etc/uci-defaults/999-custom-settings
-          #!/bin/sh
-
-          # --- 1. MULTI-CORE CPU PACKET STEERING & IRQBALANCE ---
-          uci set network.globals=globals
-          uci set network.globals.packet_steering='1'
-
-          if uci -q get irqbalance.irqbalance >/dev/null; then
-              uci set irqbalance.irqbalance.enabled='1'
-              uci commit irqbalance
-          fi
-
-          # Matikan HW Flow Offloading agar fwmark MWAN3 tetap bekerja 100% akurat
-          uci set firewall.@defaults[0].flow_offloading='0'
-          uci set firewall.@defaults[0].flow_offloading_hw='0'
-
-          # --- 2. SETUP LAN & LEPASKAN LAN1-LAN4 DARI BR-LAN ---
-          uci set network.lan=interface
-          uci set network.lan.proto='static'
-          uci set network.lan.ipaddr='192.168.11.1'
-          uci set network.lan.netmask='255.255.255.0'
-
-          for i in 1 2 3 4; do
-              uci del_list network.@device[0].ports="lan$i" 2>/dev/null
-          done
-          uci set network.@device[0].bridge_empty='1'
-
-          # --- 3. NETWORK INTERFACES (WAN1-WAN4, USB, WWAN) ---
-          for i in 1 2 3 4; do
-              uci set network.wan$i=interface
-              uci set network.wan$i.device="lan$i"
-              uci set network.wan$i.proto='dhcp'
-              uci set network.wan$i.metric="$((i*10))"
-              uci set network.wan$i.peerdns='0'
-              uci add_list network.wan$i.dns='1.1.1.1'
-              uci add_list network.wan$i.dns='8.8.8.8'
-          done
-
-          uci set network.wanusb=interface
-          uci set network.wanusb.device='usb0'
-          uci set network.wanusb.proto='dhcp'
-          uci set network.wanusb.metric='80'
-
-          uci set network.wwan=interface
-          uci set network.wwan.proto='dhcp'
-          uci set network.wwan.metric='60'
-
-          uci set network.wwan2=interface
-          uci set network.wwan2.proto='dhcp'
-          uci set network.wwan2.metric='70'
-
-          uci delete network.wan 2>/dev/null
-          uci delete network.wan6 2>/dev/null
-          uci commit network
-
-          # --- 4. FIREWALL ZONES (WAN ZONE) ---
-          uci delete firewall.@zone[1].network 2>/dev/null
-          for iface in wan wan1 wan2 wan3 wan4 wanusb wwan wwan2; do
-              uci add_list firewall.@zone[1].network="$iface"
-          done
-          uci commit firewall
-
-          # --- 5. MWAN3 CONFIGURATION (FAST-FAILOVER + GAMING UDP STICKY) ---
-          cat <<'MWAN3_EOF' > /etc/config/mwan3
-          config globals 'globals'
-          	option mmx_mask '0x3F00'
-
-          config interface 'wan1'
-          	option enabled '1'
-          	list track_ip '8.8.8.8'
-          	list track_ip '1.1.1.1'
-          	list track_ip '9.9.9.9'
-          	list track_ip '1.0.0.1'
-          	option track_method 'ping'
-          	option reliability '2'
-          	option count '1'
-          	option timeout '1'
-          	option interval '2'
-          	option down '2'
-          	option up '3'
-          	option check_operstate '1'
-
-          config interface 'wan2'
-          	option enabled '1'
-          	list track_ip '8.8.8.8'
-          	list track_ip '1.1.1.1'
-          	list track_ip '9.9.9.9'
-          	list track_ip '1.0.0.1'
-          	option track_method 'ping'
-          	option reliability '2'
-          	option count '1'
-          	option timeout '1'
-          	option interval '2'
-          	option down '2'
-          	option up '3'
-          	option check_operstate '1'
-
-          config interface 'wan3'
-          	option enabled '1'
-          	list track_ip '8.8.8.8'
-          	list track_ip '1.1.1.1'
-          	list track_ip '9.9.9.9'
-          	list track_ip '1.0.0.1'
-          	option track_method 'ping'
-          	option reliability '2'
-          	option count '1'
-          	option timeout '1'
-          	option interval '2'
-          	option down '2'
-          	option up '3'
-          	option check_operstate '1'
-
-          config interface 'wan4'
-          	option enabled '1'
-          	list track_ip '8.8.8.8'
-          	list track_ip '1.1.1.1'
-          	list track_ip '9.9.9.9'
-          	list track_ip '1.0.0.1'
-          	option track_method 'ping'
-          	option reliability '2'
-          	option count '1'
-          	option timeout '1'
-          	option interval '2'
-          	option down '2'
-          	option up '3'
-          	option check_operstate '1'
-
-          config interface 'wwan'
-          	option enabled '1'
-          	list track_ip '8.8.8.8'
-          	list track_ip '1.1.1.1'
-          	list track_ip '9.9.9.9'
-          	list track_ip '1.0.0.1'
-          	option track_method 'ping'
-          	option reliability '2'
-          	option count '1'
-          	option timeout '1'
-          	option interval '2'
-          	option down '2'
-          	option up '3'
-          	option check_operstate '1'
-
-          config interface 'wwan2'
-          	option enabled '1'
-          	list track_ip '8.8.8.8'
-          	list track_ip '1.1.1.1'
-          	list track_ip '9.9.9.9'
-          	list track_ip '1.0.0.1'
-          	option track_method 'ping'
-          	option reliability '2'
-          	option count '1'
-          	option timeout '1'
-          	option interval '2'
-          	option down '2'
-          	option up '3'
-          	option check_operstate '1'
-
-          config interface 'wanusb'
-          	option enabled '1'
-          	list track_ip '8.8.8.8'
-          	list track_ip '1.1.1.1'
-          	list track_ip '9.9.9.9'
-          	list track_ip '1.0.0.1'
-          	option track_method 'ping'
-          	option reliability '2'
-          	option count '1'
-          	option timeout '1'
-          	option interval '2'
-          	option down '2'
-          	option up '3'
-          	option check_operstate '1'
-
-          config member 'wan1_m1_w1'
-          	option interface 'wan1'
-          	option metric '1'
-          	option weight '1'
-
-          config member 'wan2_m1_w1'
-          	option interface 'wan2'
-          	option metric '1'
-          	option weight '1'
-
-          config member 'wan3_m1_w1'
-          	option interface 'wan3'
-          	option metric '1'
-          	option weight '1'
-
-          config member 'wan4_m1_w1'
-          	option interface 'wan4'
-          	option metric '1'
-          	option weight '1'
-
-          config member 'wwan_m1_w1'
-          	option interface 'wwan'
-          	option metric '1'
-          	option weight '1'
-
-          config member 'wwan2_m1_w1'
-          	option interface 'wwan2'
-          	option metric '1'
-          	option weight '1'
-
-          config member 'wanusb_m1_w1'
-          	option interface 'wanusb'
-          	option metric '1'
-          	option weight '1'
-
-          config policy 'balanced'
-          	list use_member 'wan1_m1_w1'
-          	list use_member 'wan2_m1_w1'
-          	list use_member 'wan3_m1_w1'
-          	list use_member 'wan4_m1_w1'
-          	list use_member 'wwan_m1_w1'
-          	list use_member 'wwan2_m1_w1'
-          	list use_member 'wanusb_m1_w1'
-          	option last_resort 'unreachable'
-
-          config rule 'https_sticky'
-          	option dest_port '443'
-          	option proto 'tcp'
-          	option sticky '1'
-          	option timeout '600'
-          	option use_policy 'balanced'
-
-          config rule 'gaming_udp_sticky'
-          	option dest_port '5000:5600,7000:9000,10000:20000,27000:27100,30000:30100'
-          	option proto 'udp'
-          	option sticky '1'
-          	option timeout '1200'
-          	option use_policy 'balanced'
-
-          config rule 'default_rule_v4'
-          	option dest_ip '0.0.0.0/0'
-          	option use_policy 'balanced'
-          MWAN3_EOF
-          uci commit mwan3
-
-          # --- 6. WIFI 2.4G & 5G TUNING (VHT80, WMM, SHORT-GI & ROAMING 802.11k/v) ---
-          for r in 0 1; do
-              BAND=$(uci -q get wireless.radio${r}.band)
-              uci set wireless.radio${r}.disabled='0'
-              uci set wireless.radio${r}.country='ID'
-              uci set wireless.radio${r}.channel='auto'
-              uci set wireless.radio${r}.legacy_rates='0'
-              uci set wireless.radio${r}.beacon_int='100'
-              if [ "$BAND" = "5g" ]; then
-                  uci set wireless.radio${r}.htmode='VHT80'
-                  uci set wireless.radio${r}.txpower='20'
-              else
-                  uci set wireless.radio${r}.htmode='HT20'
-                  uci set wireless.radio${r}.txpower='18'
-              fi
-
-              uci set wireless.default_radio${r}=wifi-iface
-              uci set wireless.default_radio${r}.device="radio${r}"
-              uci set wireless.default_radio${r}.network='lan'
-              uci set wireless.default_radio${r}.mode='ap'
-              uci set wireless.default_radio${r}.ssid='OpenWrt'
-              uci set wireless.default_radio${r}.encryption='none'
-              uci set wireless.default_radio${r}.disabled='0'
-              uci set wireless.default_radio${r}.wmm='1'
-              uci set wireless.default_radio${r}.dtim_period='2'
-              uci set wireless.default_radio${r}.short_gi_20='1'
-              uci set wireless.default_radio${r}.short_gi_40='1'
-              uci set wireless.default_radio${r}.short_gi_80='1'
-              uci set wireless.default_radio${r}.disassoc_low_ack='1'
-              uci set wireless.default_radio${r}.ieee80211k='1'
-              uci set wireless.default_radio${r}.bss_transition='1'
-          done
-          uci commit wireless
-
-          # --- 7. HUBUNGKAN DNSMASQ KE SMARTDNS (127.0.0.1#6053) ---
-          uci set dhcp.@dnsmasq[0].noresolv='1'
-          uci set dhcp.@dnsmasq[0].cachesize='0'
-          uci set dhcp.@dnsmasq[0].dns_forward_max='300'
-          uci -q delete dhcp.@dnsmasq[0].server || true
-          uci add_list dhcp.@dnsmasq[0].server='127.0.0.1#6053'
-          uci commit dhcp
-
-          # --- 8. AUTO FREERAM CRONTAB (SETIAP JAM 03:00) ---
-          mkdir -p /etc/crontabs
-          touch /etc/crontabs/root
-          sed -i '/freeram.sh/d' /etc/crontabs/root
-          echo "0 3 * * * /usr/bin/freeram.sh" >> /etc/crontabs/root
-          /etc/init.d/cron enable 2>/dev/null || true
-
-          exit 0
-          OUTER_EOF
-          chmod 755 package/base-files/files/etc/uci-defaults/999-custom-settings
-
-      - name: Gunakan config.buildinfo Resmi OpenWrt 25.12.6 + Paket Tambahan
-        working-directory: openwrt
+      - name: Gunakan config.buildinfo Resmi ImmortalWrt 25.12.2 + Paket Tambahan
+        working-directory: immortalwrt
         run: |
-          wget -O .config https://downloads.openwrt.org/releases/25.12.6/targets/ramips/mt7621/config.buildinfo
+          curl -fsSL https://downloads.immortalwrt.org/releases/25.12.2/targets/ramips/mt7621/config.buildinfo -o .config
 
-          # Kunci build hanya untuk ZTE E8820S agar tidak merakit 200+ router lain & SDK
+          # Kunci build hanya untuk ZTE E8820S agar tidak merakit ratusan router lain & SDK
           sed -i '/CONFIG_TARGET_DEVICE_/d' .config
           sed -i '/CONFIG_TARGET_MULTI_PROFILE/d' .config
           sed -i '/CONFIG_TARGET_ALL_PROFILES/d' .config
@@ -2918,22 +3062,26 @@ jobs:
           # CONFIG_SDK is not set
           CONFIG_CCACHE=y
 
-          # --- LuCI, Tema & Utilitas ---
+          # --- LuCI, Tema & SSL (Varian OpenSSL agar tidak bentrok apk) ---
           CONFIG_PACKAGE_luci=y
-          CONFIG_PACKAGE_luci-ssl=y
+          CONFIG_PACKAGE_luci-ssl-openssl=y
           CONFIG_PACKAGE_luci-theme-material=y
           CONFIG_PACKAGE_luci-app-filemanager=y
           CONFIG_PACKAGE_luci-app-ttyd=y
+          # CONFIG_PACKAGE_luci-ssl is not set
+          # CONFIG_PACKAGE_libustream-mbedtls is not set
+          # CONFIG_PACKAGE_px5g-mbedtls is not set
 
-          # --- Multi-Core & TCP BBR Performance ---
+          # --- Multi-Core, TCP BBR, IPSet & Fullcone NAT Performance ---
           CONFIG_PACKAGE_irqbalance=y
           CONFIG_PACKAGE_kmod-tcp-bbr=y
+          CONFIG_PACKAGE_kmod-nft-fullcone=y
+          CONFIG_PACKAGE_ipset=y
 
-          # --- SmartDNS Dual-Engine & TLS CA Bundle ---
+          # --- SmartDNS & Sertifikat SSL ---
           CONFIG_PACKAGE_smartdns=y
           CONFIG_PACKAGE_luci-app-smartdns=y
           CONFIG_PACKAGE_ca-bundle=y
-          CONFIG_PACKAGE_ca-certificates=y
 
           # --- MWAN3 Load Balancing ---
           CONFIG_PACKAGE_mwan3=y
@@ -2961,36 +3109,36 @@ jobs:
           make defconfig
 
       - name: Download Source Paket
-        working-directory: openwrt
+        working-directory: immortalwrt
         run: |
           make download -j$(nproc)
           find dl -size -1024c -exec ls -l {} \;
           find dl -size -1024c -exec rm -f {} \;
 
-      - name: Compile Firmware OpenWrt 25.12.6
-        working-directory: openwrt
+      - name: Compile Firmware ImmortalWrt 25.12.2
+        working-directory: immortalwrt
         run: |
           make -j$(nproc) || make -j1 V=s
 
       - name: Siapkan File Output
         run: |
           mkdir -p output
-          cp -f openwrt/bin/targets/ramips/mt7621/*zte_e8820s* output/
-          cp -f openwrt/.config output/config.buildinfo
+          cp -f immortalwrt/bin/targets/ramips/mt7621/*zte_e8820s* output/
+          cp -f immortalwrt/.config output/config.buildinfo
           ls -lh output/
 
       - name: Upload ke GitHub Releases
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: openwrt-25.12.6-e8820s-${{ github.run_number }}
-          name: OpenWrt 25.12.6 ZTE E8820S Max Performance + SmartDNS + NetTraffic (Build #${{ github.run_number }})
+          tag_name: immortalwrt-25.12.2-e8820s-final-${{ github.run_number }}
+          name: ImmortalWrt 25.12.2 ZTE E8820S Final Max Performance + SmartDNS + MWAN3 Gaming Lock (Build #${{ github.run_number }})
           body: |
-            Custom build **OpenWrt v25.12.6** (kompatibel 100% dengan seluruh paket & `kmods` online OpenWrt) untuk **ZTE E8820S (BREED Layout HC5962)**:
-            - **Max Performance & Anti-Lag:** TCP BBR + `fq_codel`, NAPI budget tuning, `irqbalance` + `packet_steering` 4-thread CPU, WiFi 5G `VHT80` + WMM + Short-GI + AQL Low-Latency + 802.11k/v roaming.
-            - **SmartDNS Dual-Engine:** Port `6053` (DoH/DoT Anti-DPI + `0ms` RAM cache) & Port `6054` (Dedicated Gaming IPv4 murni).
-            - **Traffic Monitor (`LuCI -> Services -> Traffic Monitor`):** Real-time per-interface, status port LAN 1–4, dan grafik tersimpan permanen.
-            - **LAN IP:** `192.168.11.1` | **WiFi 2.4G & 5G:** Aktif (`OpenWrt`, tanpa password)
-            - **MWAN3:** Fast-Failover (`~4s`) Load Balance (`wan1`–`wan4`, `wanusb`, `wwan`, `wwan2`) + Gaming UDP Sticky.
-            - **Auto FreeRAM:** `/usr/bin/freeram.sh` aktif otomatis setiap pukul `03:00`
+            Custom build final **ImmortalWrt v25.12.2** (kompatibel 100% dengan seluruh paket & `kmods` online ImmortalWrt) untuk **ZTE E8820S (BREED Layout HC5962)**:
+            - **Max Performance & Anti-Lag:** Native Fullcone NAT, TCP BBR + `fq_codel` + `tcp_notsent_lowat`, `irqbalance` + `packet_steering` 4-thread CPU, NAPI polling tuning, & WiFi 5G `VHT80` + WMM + Short-GI + AQL Low-Latency + `802.11k/v` roaming.
+            - **MWAN3 Smart Routing:** Semua trafik game (domain via SmartDNS `ipset` + port game UDP/TCP) **dikunci mutlak ke Port LAN 1 (`wan1`)** dengan prioritas DSCP EF. Semua trafik non-game (sosmed, web, download, APK, speedtest) **digabung merata (*load-balance*)** ke seluruh port (`wan1`–`wan4`, `wanusb`, `wwan`, `wwan2`).
+            - **SmartDNS Dual-Engine:** Port `6053` (DoH/DoT anti-blokir) & Port `6054` (Dedicated Gaming DNS) + cache RAM `0ms` + sinkronisasi otomatis `gaming_ips`.
+            - **Traffic Monitor (`luci-app-nettraffic`):** Terpasang otomatis di menu **Services → Traffic Monitor**.
+            - **LAN IP:** `192.168.11.1` | **WiFi 2.4G & 5G:** SSID `ImmortalWrt`, Password `internet` (WPA2-PSK).
+            - **Auto-Cleaner 03:00:** `/usr/bin/freeram.sh` aktif otomatis setiap pukul `03:00` (bersihkan RAM, defrag memori, sampah cache, & log).
             - **Upgrade dari LuCI:** Gunakan `*-squashfs-sysupgrade.bin` (matikan centang *Keep settings*).
           files: output/*
