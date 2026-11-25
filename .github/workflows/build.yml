@@ -60,7 +60,7 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      - name: Terapkan Patch BREED, Max Performance, SmartDNS, NetTraffic & MWAN3
+      - name: Terapkan Patch BREED, Max Performance, SmartDNS IX, NetTraffic & MWAN3
         working-directory: openwrt
         run: |
           # 1. Timpa DTS dengan peta partisi BREED dari folder patch/
@@ -108,7 +108,7 @@ jobs:
           net.ipv4.tcp_keepalive_intvl=15
           net.ipv4.tcp_keepalive_probes=4
 
-          # --- High-Throughput NAPI Polling & Pipa Paket Besar (MT7621A) ---
+          # --- High-Throughput NAPI Polling & SMP Packet Flow (Pipa Besar Anti-Macet) ---
           net.core.netdev_max_backlog=4096
           net.core.netdev_budget=600
           net.core.netdev_budget_usecs=8000
@@ -130,8 +130,6 @@ jobs:
           net.netfilter.nf_conntrack_max=32768
           net.netfilter.nf_conntrack_tcp_timeout_established=1800
           net.netfilter.nf_conntrack_tcp_timeout_time_wait=30
-          net.netfilter.nf_conntrack_tcp_timeout_close_wait=15
-          net.netfilter.nf_conntrack_tcp_timeout_fin_wait=30
           net.netfilter.nf_conntrack_udp_timeout=30
           net.netfilter.nf_conntrack_udp_timeout_stream=60
           vm.min_free_kbytes=16384
@@ -141,7 +139,7 @@ jobs:
           vm.dirty_background_ratio=5
           SYSCTL_EOF
 
-          # 5. Tanamkan SMP 4-Thread CPU RPS/XPS Hotplug (Distribusi Beban ke 4 Thread MT7621A)
+          # 5. Tanamkan SMP 4-Thread CPU RPS/XPS Hotplug (Distribusi Beban LAN/WAN/WiFi ke 4 Thread MT7621A)
           mkdir -p package/base-files/files/etc/hotplug.d/net
           cat <<'SMP_EOF' > package/base-files/files/etc/hotplug.d/net/20-smp-tune
           #!/bin/sh
@@ -162,107 +160,28 @@ jobs:
           SMP_EOF
           chmod 755 package/base-files/files/etc/hotplug.d/net/20-smp-tune
 
-          # 6. Tanamkan Wi-Fi Low-Latency AQL Tuning + Auto-Setup WiFi 2.4G & 5G Anti-Race Condition
-          mkdir -p package/base-files/files/usr/bin \
-                   package/base-files/files/etc/hotplug.d/ieee80211
-
-          cat <<'WIFI_INIT_EOF' > package/base-files/files/usr/bin/init-wifi.sh
-          #!/bin/sh
-          # Inisialisasi otomatis WiFi 2.4GHz & 5GHz agar pasti aktif saat first boot
-          # tanpa menimpa perubahan manual user di masa mendatang.
-
-          [ -f /etc/config/wireless ] || /sbin/wifi config 2>/dev/null || true
-          [ -f /etc/config/wireless ] || exit 0
-
-          CHANGED=0
-          for r in 0 1; do
-              uci -q get wireless.radio${r} >/dev/null || continue
-              [ -f "/etc/.wifi_radio${r}_done" ] && continue
-
-              BAND=$(uci -q get wireless.radio${r}.band)
-              uci set wireless.radio${r}.disabled='0'
-              uci set wireless.radio${r}.country='ID'
-              uci set wireless.radio${r}.channel='auto'
-              uci set wireless.radio${r}.legacy_rates='0'
-              uci set wireless.radio${r}.beacon_int='100'
-
-              uci set wireless.default_radio${r}=wifi-iface
-              uci set wireless.default_radio${r}.device="radio${r}"
-              uci set wireless.default_radio${r}.network='lan'
-              uci set wireless.default_radio${r}.mode='ap'
-              uci set wireless.default_radio${r}.encryption='psk2'
-              uci set wireless.default_radio${r}.cipher='ccmp'
-              uci set wireless.default_radio${r}.disabled='0'
-              uci set wireless.default_radio${r}.wmm='1'
-              uci set wireless.default_radio${r}.uapsd='0'
-              uci set wireless.default_radio${r}.dtim_period='2'
-              uci set wireless.default_radio${r}.maxassoc='64'
-              uci set wireless.default_radio${r}.short_gi_20='1'
-              uci set wireless.default_radio${r}.short_gi_40='1'
-              uci set wireless.default_radio${r}.short_gi_80='1'
-              uci set wireless.default_radio${r}.disassoc_low_ack='1'
-              uci set wireless.default_radio${r}.ieee80211k='1'
-              uci set wireless.default_radio${r}.bss_transition='1'
-
-              if [ "$BAND" = "5g" ]; then
-                  uci set wireless.radio${r}.htmode='VHT80'
-                  uci set wireless.radio${r}.txpower='20'
-                  uci set wireless.default_radio${r}.ssid='Openwrt-5GHZ'
-                  uci set wireless.default_radio${r}.key='internetcepat'
-              else
-                  uci set wireless.radio${r}.htmode='HT20'
-                  uci set wireless.radio${r}.txpower='18'
-                  uci set wireless.default_radio${r}.ssid='Openwrt'
-                  uci set wireless.default_radio${r}.key='internet'
-              fi
-
-              touch "/etc/.wifi_radio${r}_done"
-              CHANGED=1
-          done
-
-          if [ "$CHANGED" = "1" ]; then
-              uci commit wireless
-              /sbin/wifi reload 2>/dev/null || /sbin/wifi up 2>/dev/null || true
-          fi
-          WIFI_INIT_EOF
-          chmod 755 package/base-files/files/usr/bin/init-wifi.sh
-
-          # Jalankan tepat setelah 10-wifi-detect mendeteksi phy0 / phy1
-          cat <<'WIFI_HOTPLUG_EOF' > package/base-files/files/etc/hotplug.d/ieee80211/20-wifi-setup
-          #!/bin/sh
-          [ "$ACTION" = "add" ] || exit 0
-          /usr/bin/init-wifi.sh >/dev/null 2>&1 &
-          WIFI_HOTPLUG_EOF
-          chmod 755 package/base-files/files/etc/hotplug.d/ieee80211/20-wifi-setup
-
+          # 6. Tanamkan Wi-Fi Low-Latency AQL Tuning (Anti-Bufferbloat Udara MT76)
+          mkdir -p package/base-files/files/etc/hotplug.d/ieee80211
           cat <<'WIFI_AQL_EOF' > package/base-files/files/etc/hotplug.d/ieee80211/99-mt76-lowlatency
           #!/bin/sh
           [ "$ACTION" = "add" ] || exit 0
           for phy in /sys/kernel/debug/ieee80211/phy*; do
-              [ -w "$phy/aql_enable" ] && echo 1 > "$phy/aql_enable" 2>/dev/null || true
+              [ -w "$phy/aql_enable" ] && echo 1 > "$phy/aql_enable" 2>/dev/null
               if [ -w "$phy/aql_txq_limit" ]; then
-                  echo "0 1500 3000" > "$phy/aql_txq_limit" 2>/dev/null || true
-                  echo "1 2000 4000" > "$phy/aql_txq_limit" 2>/dev/null || true
-                  echo "2 3000 6000" > "$phy/aql_txq_limit" 2>/dev/null || true
-                  echo "3 2000 4000" > "$phy/aql_txq_limit" 2>/dev/null || true
+                  echo "0 1500 3000" > "$phy/aql_txq_limit" 2>/dev/null
+                  echo "1 2000 4000" > "$phy/aql_txq_limit" 2>/dev/null
+                  echo "2 3000 6000" > "$phy/aql_txq_limit" 2>/dev/null
+                  echo "3 2000 4000" > "$phy/aql_txq_limit" 2>/dev/null
               fi
           done
           WIFI_AQL_EOF
           chmod 755 package/base-files/files/etc/hotplug.d/ieee80211/99-mt76-lowlatency
 
-          # Jaring pengaman akhir di rc.local saat boot selesai
-          cat <<'RCLOCAL_EOF' > package/base-files/files/etc/rc.local
-          # Put your custom commands here that should be executed once
-          # the system init finished. By default this file does nothing.
-          /usr/bin/init-wifi.sh >/dev/null 2>&1 &
-          exit 0
-          RCLOCAL_EOF
-          chmod 755 package/base-files/files/etc/rc.local
-
           # 7. Tanamkan /usr/bin/freeram.sh (Deep Maintenance & Junk Cleaner otomatis pukul 03:00)
+          mkdir -p package/base-files/files/usr/bin
           cat <<'FREERAM_EOF' > package/base-files/files/usr/bin/freeram.sh
           #!/bin/sh
-          # Script Pembersih Total RAM, Cache Sampah, Log & Tabel Basi (03:00 WIB)
+          # Script Pembersih Total RAM, Cache Sampah, Log & Tabel Basi (03:00)
 
           MEM_BEFORE=$(awk '/MemAvailable:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)
 
@@ -271,9 +190,9 @@ jobs:
           echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
 
           # 2. Hapus log, core dump & cache sementara LuCI/paket di RAM (/tmp)
-          rm -rf /tmp/log/* /tmp/*.log /tmp/core* /var/log/* \
+          rm -rf /tmp/log/* /tmp/*.log /tmp/*.log.* /tmp/core* /var/log/* \
                  /tmp/luci-modulecache/* /tmp/luci-indexcache* \
-                 /tmp/opkg-lists/* /tmp/apk/cache/* /tmp/cache/* 2>/dev/null || true
+                 /tmp/opkg-lists/* /tmp/apk/* /tmp/cache/* 2>/dev/null || true
           dmesg -c >/dev/null 2>&1 || true
 
           # 3. Bersihkan tetangga ARP basi & padatkan fragmentasi RAM
@@ -288,11 +207,10 @@ jobs:
           FREERAM_EOF
           chmod 755 package/base-files/files/usr/bin/freeram.sh
 
-          # 8. Tanamkan Custom Package: luci-app-nettraffic (Port WAN sebagai LAN, LAN1-4/USB/WWAN sebagai WAN)
+          # 8. Tanamkan Custom Package: luci-app-nettraffic (Tersinkronisasi dengan Port WAN -> LAN)
           mkdir -p package/base-files/files/etc/config \
                    package/base-files/files/etc/init.d \
                    package/base-files/files/etc/uci-defaults \
-                   package/base-files/files/etc/nettraffic \
                    package/base-files/files/usr/libexec/rpcd \
                    package/base-files/files/usr/share/luci/menu.d \
                    package/base-files/files/usr/share/rpcd/acl.d \
@@ -303,10 +221,7 @@ jobs:
           	option interval '2'
           	option save_interval '60'
           	option history '60'
-          	# Biarkan interfaces kosong agar auto-detect seluruh uplink MWAN3 (wan1-wan4, usb0, wwan)
-          	# option interfaces 'lan1 lan2 lan3 lan4'
-          	# Port fisik WAN sekarang tergabung di br-lan sebagai port LAN
-          	option ports 'wan'
+          	option ports 'lan1 lan2 lan3 lan4'
           NT_CONF_EOF
           chmod 644 package/base-files/files/etc/config/nettraffic
 
@@ -337,7 +252,7 @@ jobs:
           cat <<'NT_UCI_EOF' > package/base-files/files/etc/uci-defaults/90_luci-app-nettraffic
           #!/bin/sh
 
-          mkdir -p /etc/nettraffic /var/run/nettraffic
+          mkdir -p /etc/nettraffic
 
           touch /etc/sysupgrade.conf 2>/dev/null || true
           if [ -f /etc/sysupgrade.conf ] && ! grep -q '^/etc/nettraffic/' /etc/sysupgrade.conf 2>/dev/null; then
@@ -498,10 +413,6 @@ jobs:
           	_d="$1"
           	[ -n "$_d" ] || return 0
           	[ -d "$SYS_NET/$_d" ] || return 0
-          	[ "$_d" = "br-lan" ] && return 0
-          	case " $CONF_PORTS " in
-          		*" $_d "*) return 0 ;;
-          	esac
           	case " $WAN_DEVS " in
           		*" $_d "*) return 0 ;;
           	esac
@@ -599,13 +510,14 @@ jobs:
 
           detect_monitors() {
           	MON_DEVS=""
-          	for _d in $CONF_PORTS; do
-          		add_mon "$_d"
-          	done
-          	add_mon br-lan
           	for _n in 1 2 3 4; do
           		add_mon "lan$_n"
           	done
+          	for _d in $CONF_PORTS; do
+          		add_mon "$_d"
+          	done
+          	add_mon wan
+          	add_mon br-lan
           	detect_usb
           	for _d in $USB_DEVS; do
           		add_mon "$_d"
@@ -822,21 +734,123 @@ jobs:
           	printf '%s|%s|%s|%s|%s\n' "$_label" "$_dev" "$_up" "$_speed" "$_duplex" >> "$_file"
           }
 
+          collect_swconfig() {
+          	_file="$1"
+          	command -v swconfig >/dev/null 2>&1 || return 1
+
+          	_sw="$(swconfig list 2>/dev/null | sed -n 's/.*\(switch[0-9][0-9]*\).*/\1/p' | head -n 1)"
+          	[ -n "$_sw" ] || _sw=switch0
+          	_out="$(swconfig dev "$_sw" show 2>/dev/null)"
+          	[ -n "$_out" ] || return 1
+
+          	_info="$RUN_DIR/swports"
+          	printf '%s\n' "$_out" | awk '
+          		/^Port [0-9]+:/ { p = $2; sub(/:$/, "", p); next }
+          		/link:/ {
+          			up = ($0 ~ /link:up/) ? 1 : 0
+          			sp = 0
+          			if (match($0, /speed:[0-9]+/))
+          				sp = substr($0, RSTART + 6, RLENGTH - 6)
+          			dup = ""
+          			if ($0 ~ /full-duplex/) dup = "full"
+          			else if ($0 ~ /half-duplex/) dup = "half"
+          			if (p != "")
+          				print p "|" up "|" sp "|" dup
+          		}
+          	' > "$_info"
+
+          	_members="$(printf '%s\n' "$_out" | awk '
+          		/^VLAN 1:/ { f = 1; next }
+          		f && /ports:/ { sub(/^[ \t]*ports:[ \t]*/, ""); print; exit }
+          	')"
+          	[ -n "$_members" ] || _members="$(awk -F'|' '{ print $1 }' "$_info" | tr '\n' ' ')"
+
+          	_n=1
+          	for _p in $_members; do
+          		case "$_p" in
+          			*t) continue ;;
+          		esac
+          		_p="${_p%\*}"
+          		_line="$(awk -F'|' -v p="$_p" '$1 == p { print $2 "|" $3 "|" $4; exit }' "$_info")"
+          		[ -n "$_line" ] || continue
+          		_up="${_line%%|*}"
+          		_rest="${_line#*|}"
+          		_speed="${_rest%%|*}"
+          		_dup="${_rest#*|}"
+          		printf 'LAN %s|switch%s/%s|%s|%s|%s\n' \
+          			"$_n" "$_sw" "$_p" "$_up" "$_speed" "$_dup" >> "$_file"
+          		_n=$((_n + 1))
+          		[ "$_n" -gt 4 ] && break
+          	done
+          }
+
+          add_ports_from_list() {
+          	_list="$1"
+          	_file="$2"
+          	_n=1
+
+          	for _dev in $_list; do
+          		case "$_dev" in
+          			wan*|wlan*|phy*|bat*|mesh*|vxlan*|tun*|tap*|br-*|lo|'')
+          				continue
+          				;;
+          		esac
+          		[ -d "$SYS_NET/$_dev" ] || continue
+          		port_add "LAN $_n" "$_dev" "$_file"
+          		_n=$((_n + 1))
+          		[ "$_n" -gt 4 ] && break
+          	done
+          }
+
+          collect_named_ports() {
+          	_file="$1"
+          	_list=""
+
+          	if command -v ubus >/dev/null 2>&1; then
+          		_out="$(ubus call network.device status '{"name":"br-lan"}' 2>/dev/null)"
+          		_list="$(printf '%s\n' "$_out" | \
+          			sed -n 's/.*"bridge-members"[[:space:]]*:[[:space:]]*\[\([^]]*\)\].*/\1/p' | \
+          			tr ',' '\n' | sed 's/[][",:{}]//g')"
+          	fi
+
+          	add_ports_from_list "$_list" "$_file"
+
+          	_n="$(awk 'END { print NR }' "$_file" 2>/dev/null)"
+          	if { ! is_uint "$_n" || [ "$_n" -eq 0 ]; } && \
+          	   command -v jsonfilter >/dev/null 2>&1 && [ -r /etc/board.json ]; then
+          		_list="$(jsonfilter -i /etc/board.json -e '@.network.lan.ports[*]' 2>/dev/null)"
+          		add_ports_from_list "$_list" "$_file"
+          	fi
+          }
+
           collect_ports() {
           	_tmp="$PORTS_FILE.$$.tmp"
           	: > "$_tmp"
 
+          	_count=0
           	if [ -n "$CONF_PORTS" ]; then
           		_n=1
           		for _dev in $CONF_PORTS; do
-          			[ -d "$SYS_NET/$_dev" ] || continue
-          			if [ "$_dev" = "wan" ]; then
-          				port_add "LAN (Port WAN)" "$_dev" "$_tmp"
-          			else
-          				port_add "LAN $_n" "$_dev" "$_tmp"
-          			fi
+          			port_add "LAN $_n" "$_dev" "$_tmp"
           			_n=$((_n + 1))
+          			_count=$((_count + 1))
           		done
+          	else
+          		for _n in 1 2 3 4; do
+          			_dev="lan$_n"
+          			if [ -d "$SYS_NET/$_dev" ]; then
+          				port_add "LAN $_n" "$_dev" "$_tmp"
+          				_count=$((_count + 1))
+          			fi
+          		done
+          		if [ "$_count" -eq 0 ]; then
+          			collect_named_ports "$_tmp"
+          			_count="$(awk 'END { print NR }' "$_tmp" 2>/dev/null)"
+          			is_uint "$_count" || _count=0
+          		fi
+          		if [ "$_count" -eq 0 ]; then
+          			collect_swconfig "$_tmp"
+          		fi
           	fi
 
           	mv -f "$_tmp" "$PORTS_FILE"
@@ -1108,14 +1122,15 @@ jobs:
           		_label=""
           		_kind="other"
           		case "$_d" in
-          			wan) _label="LAN (Port WAN)"; _kind="lan" ;;
-          			lan1) _label="WAN 1 (lan1)"; _kind="wan" ;;
-          			lan2) _label="WAN 2 (lan2)"; _kind="wan" ;;
-          			lan3) _label="WAN 3 (lan3)"; _kind="wan" ;;
-          			lan4) _label="WAN 4 (lan4)"; _kind="wan" ;;
+          			lan1) _label="LAN 1"; _kind="lan" ;;
+          			lan2) _label="LAN 2"; _kind="lan" ;;
+          			lan3) _label="LAN 3"; _kind="lan" ;;
+          			lan4) _label="LAN 4"; _kind="lan" ;;
+          			wan) _label="Port WAN (LAN)"; _kind="lan" ;;
           			br-lan) _label="br-lan"; _kind="bridge" ;;
           			usb*) _label="USB"; _kind="usb" ;;
           			wwan*) _label="USB Modem"; _kind="usb" ;;
+          			pppoe-wan) _label="WAN PPPoE"; _kind="wan" ;;
           			*) _label="$_d"; _kind="other" ;;
           		esac
           		if is_usb_dev "$_d"; then
@@ -1551,7 +1566,7 @@ jobs:
           	'.nt-if-foot { display: flex; justify-content: space-between; gap: 8px; margin-top: 5px; color: var(--text-color-low, #777); font-size: .68rem; font-variant-numeric: tabular-nums; }',
           	'.nt-if-foot b { color: var(--text-color, #222); font-weight: 600; }',
           	'.nt-if-meta { margin-top: 3px; overflow: hidden; color: var(--text-color-low, #777); font-size: .66rem; text-overflow: ellipsis; white-space: nowrap; }',
-          	'.nt-ports { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }',
+          	'.nt-ports { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }',
           	'.nt-port { position: relative; display: flex; flex-direction: column; align-items: center; padding: 14px 10px 12px; border: 1px solid var(--border-color, #ddd); border-radius: 12px; background: var(--background-color-high, #fff); color: var(--text-color-low, #777); text-align: center; }',
           	'.nt-port.up { border-color: var(--nt-accent); color: var(--text-color, #222); }',
           	'.nt-port.down { opacity: .72; }',
@@ -1578,7 +1593,7 @@ jobs:
           	'.nt-footer-info div { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }',
           	'.nt-page.offline .nt-rate, .nt-page.offline .nt-usage { opacity: .6; }',
           	'@media (max-width: 860px) { .nt-grid-usage { grid-template-columns: repeat(2, minmax(0, 1fr)); } .nt-grid-usage .nt-usage:last-child { grid-column: 1 / -1; } .nt-sys { grid-template-columns: repeat(3, minmax(0, 1fr)); } .nt-uplinks { grid-template-columns: repeat(2, minmax(0, 1fr)); } }',
-          	'@media (max-width: 640px) { .nt-head { align-items: stretch; flex-direction: column; } .nt-actions { justify-content: flex-start; } .nt-grid-rate { grid-template-columns: 1fr; } .nt-uplinks { grid-template-columns: 1fr; } .nt-sys { grid-template-columns: repeat(2, minmax(0, 1fr)); } .nt-rate { padding: 16px; } .nt-rate-icon { width: 44px; height: 44px; font-size: 1.4rem; } .nt-ifgrid { grid-template-columns: 1fr; } .nt-footer-info div { white-space: normal; } }'
+          	'@media (max-width: 640px) { .nt-head { align-items: stretch; flex-direction: column; } .nt-actions { justify-content: flex-start; } .nt-grid-rate { grid-template-columns: 1fr; } .nt-uplinks { grid-template-columns: 1fr; } .nt-ports { grid-template-columns: repeat(2, minmax(0, 1fr)); } .nt-sys { grid-template-columns: repeat(2, minmax(0, 1fr)); } .nt-rate { padding: 16px; } .nt-rate-icon { width: 44px; height: 44px; font-size: 1.4rem; } .nt-ifgrid { grid-template-columns: 1fr; } .nt-footer-info div { white-space: normal; } }'
           ].join('\n');
 
           function num(v) {
@@ -1807,18 +1822,19 @@ jobs:
 
           function ifaceRank(item) {
           	var dev = String((item && item.device) || '');
-          	if (dev === 'wan')
-          		return 1;
-          	if (dev === 'br-lan')
-          		return 2;
           	var m = /^lan([0-9]+)$/.exec(dev);
+
           	if (m)
-          		return 10 + num(m[1]);
+          		return num(m[1]);
+          	if (dev === 'wan')
+          		return 45;
+          	if (dev === 'br-lan')
+          		return 50;
           	if (dev === '__usb')
           		return 65;
           	if (item && item.kind === 'usb')
           		return 60;
-          	if (item && item.kind === 'wan')
+          	if (dev === 'pppoe-wan' || (item && item.kind === 'wan'))
           		return 70;
           	return 80;
           }
@@ -1885,7 +1901,7 @@ jobs:
           			el('div', { 'class': 'nt-head' }, [
           				el('div', {}, [
           					el('h2', { 'class': 'nt-title' }, 'Traffic Monitor'),
-          					el('p', { 'class': 'nt-sub' }, 'Traffic real-time Port WAN (LAN), br-lan, USB, dan uplink MWAN3. Grafik tersimpan permanen.')
+          					el('p', { 'class': 'nt-sub' }, 'Traffic real-time LAN 1–4, br-lan, USB, dan uplink internet. Grafik tersimpan permanen.')
           				]),
           				el('div', { 'class': 'nt-actions' }, [
           					el('button', {
@@ -1939,7 +1955,7 @@ jobs:
           			]),
           			el('div', { 'class': 'nt-section' }, [
           				el('div', { 'class': 'nt-section-head' }, [
-          					el('h3', {}, 'Uplink Internet (MWAN3)'),
+          					el('h3', {}, 'Uplink Internet'),
           					el('span', { 'class': 'nt-section-note', 'data-k': 'uplinkNote' }, '—')
           				]),
           				el('div', { 'class': 'nt-uplinks', 'data-k': 'uplinks' })
@@ -1984,7 +2000,7 @@ jobs:
           			]),
           			el('div', { 'class': 'nt-footer' }, [
           				el('div', { 'class': 'nt-footer-info' }, [
-          					el('div', { 'data-k': 'wanInfo' }, 'Uplink: —'),
+          					el('div', { 'data-k': 'wanInfo' }, 'WAN: —'),
           					el('div', { 'data-k': 'saveInfo' }, 'Data dan grafik disimpan otomatis ke flash.')
           				])
           			])
@@ -2182,7 +2198,35 @@ jobs:
 
           	updateIfaces: function(status) {
           		var self = this;
-          		var ifaces = Array.isArray(status.ifaces) ? status.ifaces.slice() : [];
+          		var ifaces = Array.isArray(status.ifaces) ? status.ifaces.slice() : null;
+
+          		if (!ifaces) {
+          			ifaces = [];
+          			var seen = {};
+
+          			(Array.isArray(status.ports) ? status.ports : []).forEach(function(p) {
+          				if (!p || !p.device || seen[p.device])
+          					return;
+          				seen[p.device] = true;
+          				ifaces.push({
+          					device: p.device, label: p.label, kind: 'lan', up: p.up === true,
+          					speed: p.speed, duplex: p.duplex,
+          					rx_rate: 0, tx_rate: 0, rx_total: 0, tx_total: 0, history: []
+          				});
+          			});
+
+          			(Array.isArray(status.uplinks) ? status.uplinks : []).forEach(function(u) {
+          				if (!u || !u.device || seen[u.device])
+          					return;
+          				seen[u.device] = true;
+          				ifaces.push({
+          					device: u.device, label: u.device, kind: 'wan', wan: true, up: u.up === true,
+          					speed: u.speed, duplex: u.duplex,
+          					rx_rate: u.rx_rate, tx_rate: u.tx_rate,
+          					rx_total: u.rx_total, tx_total: u.tx_total, history: []
+          				});
+          			});
+          		}
 
           		ifaces = ifaces.filter(function(item) { return item && item.device; });
 
@@ -2333,7 +2377,7 @@ jobs:
           		var msg = '';
 
           		if (status && status.wan_detected === false)
-          			msg = 'Uplink WAN belum terhubung ke internet (colok sumber internet ke LAN1–LAN4 atau USB Modem).';
+          			msg = 'Interface WAN belum terdeteksi. Pastikan internet aktif, atau isi option interfaces di /etc/config/nettraffic.';
 
           		this.nodes.warning.hidden = !msg;
           		this.nodes.warningText.textContent = msg;
@@ -2515,7 +2559,7 @@ jobs:
           NT_VIEW_EOF
           chmod 644 package/base-files/files/www/luci-static/resources/view/nettraffic/overview.js
 
-          # 9. Tanamkan SmartDNS Dual Engine + IX / IIX Gaming Peering (Port 6053 Anti-Blokir + Port 6054 Gaming IX)
+          # 9. Tanamkan SmartDNS Dual-Engine + IX / IIX / OpenIXP Gaming Peering
           cat <<'SMARTDNS_UCI_EOF' > package/base-files/files/etc/uci-defaults/990-smartdns-setup
           #!/bin/sh
 
@@ -2548,17 +2592,21 @@ jobs:
           max-reply-ip-num 1
           force-aaaa-soa yes
 
-          # --- LISTENER PORT 6054: KHUSUS DEDICATED GAMING IX PEERING ---
+          # --- LISTENER PORT 6054: KHUSUS DEDICATED GAMING ---
           bind :6054 -group gaming
 
           # ==========================================================
           # ENGINE 1: DNS SUPER CEPAT & JEBOL SEMUA (DEFAULT PORT 6053)
-          # Menggunakan DoH/DoT IP-SAN Valid (Anti-DPI & Anti-Blokir ISP)
+          # Menggunakan DoH/DoT IP-SAN Valid + Bootstrap Anti-Error TLS
           # ==========================================================
+          server 1.1.1.1 -bootstrap-dns
+          server 8.8.8.8 -bootstrap-dns
           server-https https://1.1.1.1/dns-query
           server-https https://1.0.0.1/dns-query
           server-https https://94.140.14.140/dns-query
           server-https https://94.140.14.141/dns-query
+          server-https https://dns.google/dns-query
+          server-https https://dns.quad9.net/dns-query
           server-tls 1.1.1.1:853
           server-tls 1.0.0.1:853
           server-tls 8.8.8.8:853
@@ -2577,11 +2625,10 @@ jobs:
           server 9.9.9.11 -group gaming -exclude-default-group
           server 103.28.112.112 -group gaming -exclude-default-group
           server 103.133.222.222 -group gaming -exclude-default-group
-          server 202.134.1.10 -group gaming -exclude-default-group
           server-tls 1.1.1.1:853 -group gaming -exclude-default-group
           server-tls 8.8.8.8:853 -group gaming -exclude-default-group
 
-          # --- AUTO-ROUTING NTP (COLD-BOOT SYNC), VOICE & DOMAIN GAME KE IX PEERING ---
+          # --- AUTO-ROUTING NTP (COLD-BOOT SYNC) & DOMAIN GAME KE ENGINE IX ---
           nameserver /pool.ntp.org/gaming
           nameserver /mobilelegends.com/gaming
           nameserver /moonton.com/gaming
@@ -2619,11 +2666,11 @@ jobs:
           SMARTDNS_UCI_EOF
           chmod 755 package/base-files/files/etc/uci-defaults/990-smartdns-setup
 
-          # 10. Tanamkan skrip uci-defaults permanen (Root Pass, Multi-Core, Port WAN->br-lan, LAN1-4->WAN, MWAN3, WiFi, DNS & Crontab)
+          # 10. Tanamkan skrip uci-defaults permanen (Root Login, Multi-Core, Port WAN->LAN, WiFi 2.4G/5G, MWAN3 & Cron)
           cat <<'OUTER_EOF' > package/base-files/files/etc/uci-defaults/999-custom-settings
           #!/bin/sh
 
-          # --- 0. PASSWORD ROOT (LUCI WEB UI & SSH: indonesiaraya) ---
+          # --- 0. LOGIN WEB LUCI & SSH (Username: root | Password: indonesiaraya) ---
           if command -v passwd >/dev/null 2>&1; then
               printf 'indonesiaraya\nindonesiaraya\n' | passwd root >/dev/null 2>&1 || true
           fi
@@ -2641,23 +2688,20 @@ jobs:
           uci set firewall.@defaults[0].flow_offloading='0'
           uci set firewall.@defaults[0].flow_offloading_hw='0'
 
-          # --- 2. SETUP LAN: PORT FISIK 'WAN' MASUK KE BR-LAN, PORT 'LAN1-4' DILEPAS JADI WAN ---
-          uci -q delete network.wan
-          uci -q delete network.wan6
-
-          for i in 1 2 3 4; do
-              uci -q del_list network.@device[0].ports="lan$i"
-          done
-          uci -q del_list network.@device[0].ports='wan'
-          uci add_list network.@device[0].ports='wan'
-
+          # --- 2. SETUP LAN, LEPASKAN LAN1-LAN4 DARI BR-LAN & PINDAHKAN PORT FISIK WAN KE BR-LAN ---
           uci set network.lan=interface
-          uci set network.lan.device='br-lan'
           uci set network.lan.proto='static'
           uci set network.lan.ipaddr='192.168.11.1'
           uci set network.lan.netmask='255.255.255.0'
 
-          # --- 3. NETWORK INTERFACES (WAN1-WAN4 dari LAN1-4, USB, WWAN, WWAN2) ---
+          for i in 1 2 3 4; do
+              uci del_list network.@device[0].ports="lan$i" 2>/dev/null || true
+          done
+          uci del_list network.@device[0].ports='wan' 2>/dev/null || true
+          uci add_list network.@device[0].ports='wan'
+          uci set network.@device[0].bridge_empty='1'
+
+          # --- 3. NETWORK INTERFACES (WAN1-WAN4, USB, WWAN, WWAN2) ---
           for i in 1 2 3 4; do
               uci set network.wan$i=interface
               uci set network.wan$i.device="lan$i"
@@ -2690,16 +2734,18 @@ jobs:
           uci add_list network.wwan2.dns='1.1.1.1'
           uci add_list network.wwan2.dns='8.8.8.8'
 
+          uci delete network.wan 2>/dev/null || true
+          uci delete network.wan6 2>/dev/null || true
           uci commit network
 
-          # --- 4. FIREWALL ZONES (LAN = br-lan [Port WAN + WiFi], WAN = wan1-4 + usb + wwan) ---
-          uci -q delete firewall.@zone[1].network
+          # --- 4. FIREWALL ZONES (WAN ZONE UNTUK UPLINK MWAN3) ---
+          uci delete firewall.@zone[1].network 2>/dev/null || true
           for iface in wan1 wan2 wan3 wan4 wanusb wwan wwan2; do
               uci add_list firewall.@zone[1].network="$iface"
           done
           uci commit firewall
 
-          # --- 5. MWAN3 CONFIGURATION (FAST-FAILOVER + GAMING UDP STICKY) ---
+          # --- 5. MWAN3 CONFIGURATION (STABLE LOAD BALANCE + GAMING UDP STICKY) ---
           cat <<'MWAN3_EOF' > /etc/config/mwan3
           config globals 'globals'
           	option mmx_mask '0x3F00'
@@ -2712,11 +2758,11 @@ jobs:
           	list track_ip '1.0.0.1'
           	option track_method 'ping'
           	option reliability '2'
-          	option count '1'
-          	option timeout '1'
-          	option interval '2'
-          	option down '2'
-          	option up '3'
+          	option count '2'
+          	option timeout '2'
+          	option interval '3'
+          	option down '3'
+          	option up '4'
           	option check_operstate '1'
 
           config interface 'wan2'
@@ -2727,11 +2773,11 @@ jobs:
           	list track_ip '1.0.0.1'
           	option track_method 'ping'
           	option reliability '2'
-          	option count '1'
-          	option timeout '1'
-          	option interval '2'
-          	option down '2'
-          	option up '3'
+          	option count '2'
+          	option timeout '2'
+          	option interval '3'
+          	option down '3'
+          	option up '4'
           	option check_operstate '1'
 
           config interface 'wan3'
@@ -2742,11 +2788,11 @@ jobs:
           	list track_ip '1.0.0.1'
           	option track_method 'ping'
           	option reliability '2'
-          	option count '1'
-          	option timeout '1'
-          	option interval '2'
-          	option down '2'
-          	option up '3'
+          	option count '2'
+          	option timeout '2'
+          	option interval '3'
+          	option down '3'
+          	option up '4'
           	option check_operstate '1'
 
           config interface 'wan4'
@@ -2757,11 +2803,11 @@ jobs:
           	list track_ip '1.0.0.1'
           	option track_method 'ping'
           	option reliability '2'
-          	option count '1'
-          	option timeout '1'
-          	option interval '2'
-          	option down '2'
-          	option up '3'
+          	option count '2'
+          	option timeout '2'
+          	option interval '3'
+          	option down '3'
+          	option up '4'
           	option check_operstate '1'
 
           config interface 'wwan'
@@ -2772,11 +2818,11 @@ jobs:
           	list track_ip '1.0.0.1'
           	option track_method 'ping'
           	option reliability '2'
-          	option count '1'
-          	option timeout '1'
-          	option interval '2'
-          	option down '2'
-          	option up '3'
+          	option count '2'
+          	option timeout '2'
+          	option interval '3'
+          	option down '3'
+          	option up '4'
           	option check_operstate '1'
 
           config interface 'wwan2'
@@ -2787,11 +2833,11 @@ jobs:
           	list track_ip '1.0.0.1'
           	option track_method 'ping'
           	option reliability '2'
-          	option count '1'
-          	option timeout '1'
-          	option interval '2'
-          	option down '2'
-          	option up '3'
+          	option count '2'
+          	option timeout '2'
+          	option interval '3'
+          	option down '3'
+          	option up '4'
           	option check_operstate '1'
 
           config interface 'wanusb'
@@ -2802,11 +2848,11 @@ jobs:
           	list track_ip '1.0.0.1'
           	option track_method 'ping'
           	option reliability '2'
-          	option count '1'
-          	option timeout '1'
-          	option interval '2'
-          	option down '2'
-          	option up '3'
+          	option count '2'
+          	option timeout '2'
+          	option interval '3'
+          	option down '3'
+          	option up '4'
           	option check_operstate '1'
 
           config member 'wan1_m1_w1'
@@ -2874,8 +2920,49 @@ jobs:
           MWAN3_EOF
           uci commit mwan3
 
-          # --- 6. WIFI 2.4G & 5G AUTO-ACTIVATE (DITANGANI JUGA OLEH HOTPLUG & RC.LOCAL) ---
-          /usr/bin/init-wifi.sh >/dev/null 2>&1 || true
+          # --- 6. WIFI 2.4G & 5G HIGH-DENSITY PRO TUNING (VHT80, CCMP, WMM, SHORT-GI & 802.11k/v) ---
+          [ ! -f /etc/config/wireless ] && wifi config 2>/dev/null || true
+
+          for r in 0 1; do
+              uci -q get wireless.radio${r} >/dev/null || continue
+              BAND=$(uci -q get wireless.radio${r}.band)
+              uci set wireless.radio${r}.disabled='0'
+              uci set wireless.radio${r}.country='ID'
+              uci set wireless.radio${r}.channel='auto'
+              uci set wireless.radio${r}.beacon_int='100'
+              uci set wireless.radio${r}.short_gi_20='1'
+              uci set wireless.radio${r}.short_gi_40='1'
+              uci set wireless.radio${r}.short_gi_80='1'
+
+              uci set wireless.default_radio${r}=wifi-iface
+              uci set wireless.default_radio${r}.device="radio${r}"
+              uci set wireless.default_radio${r}.network='lan'
+              uci set wireless.default_radio${r}.mode='ap'
+              uci set wireless.default_radio${r}.encryption='psk2'
+              uci set wireless.default_radio${r}.cipher='ccmp'
+              uci set wireless.default_radio${r}.disabled='0'
+              uci set wireless.default_radio${r}.wmm='1'
+              uci set wireless.default_radio${r}.uapsd='0'
+              uci set wireless.default_radio${r}.dtim_period='2'
+              uci set wireless.default_radio${r}.maxassoc='64'
+              uci set wireless.default_radio${r}.disassoc_low_ack='1'
+              uci set wireless.default_radio${r}.ieee80211k='1'
+              uci set wireless.default_radio${r}.bss_transition='1'
+
+              if [ "$BAND" = "5g" ]; then
+                  uci set wireless.radio${r}.htmode='VHT80'
+                  uci set wireless.radio${r}.txpower='20'
+                  uci set wireless.default_radio${r}.ssid='Openwrt-5GHZ'
+                  uci set wireless.default_radio${r}.key='internetcepat'
+              else
+                  uci set wireless.radio${r}.htmode='HT20'
+                  uci set wireless.radio${r}.txpower='18'
+                  uci set wireless.radio${r}.legacy_rates='0'
+                  uci set wireless.default_radio${r}.ssid='Openwrt'
+                  uci set wireless.default_radio${r}.key='internet'
+              fi
+          done
+          uci commit wireless
 
           # --- 7. HUBUNGKAN DNSMASQ KE SMARTDNS (127.0.0.1#6053) ---
           uci set dhcp.@dnsmasq[0].noresolv='1'
@@ -2934,7 +3021,7 @@ jobs:
           CONFIG_PACKAGE_zram-swap=y
           CONFIG_PACKAGE_kmod-tcp-bbr=y
 
-          # --- SmartDNS Dual-Engine + IX Peering & TLS CA Bundle ---
+          # --- SmartDNS Dual-Engine & TLS CA Bundle ---
           CONFIG_PACKAGE_smartdns=y
           CONFIG_PACKAGE_luci-app-smartdns=y
           CONFIG_PACKAGE_ca-bundle=y
@@ -2991,12 +3078,12 @@ jobs:
           name: OpenWrt 25.12.6 ZTE E8820S Max Performance + SmartDNS IX + NetTraffic (Build #${{ github.run_number }})
           body: |
             Custom build **OpenWrt v25.12.6** (kompatibel 100% dengan seluruh paket & `kmods` online OpenWrt) untuk **ZTE E8820S (BREED Layout HC5962)**:
-            - **Port Mapping:** Port fisik **`WAN`** otomatis menjadi **LAN (`br-lan` - DHCP `192.168.11.1`)**, sedangkan **`LAN1`–`LAN4`** (`wan1`–`wan4`), **`USB`** (`wanusb`), **`wwan`**, dan **`wwan2`** menjadi uplink **`mwan3`**.
-            - **WiFi Auto-Active:** **WiFi 2.4GHz** (`Openwrt` / `internet`) & **WiFi 5GHz** (`Openwrt-5GHZ` / `internetcepat`) langsung aktif otomatis saat *first boot*.
-            - **Max Performance & Anti-Lag:** TCP BBR + `fq_codel`, NAPI budget tinggi, SMP 4-Thread CPU RPS/XPS + `irqbalance` + `packet_steering`, ZRAM Swap, WiFi 5G `VHT80` + WMM + Short-GI + AQL Low-Latency + `uapsd=0` + 802.11k/v roaming.
-            - **SmartDNS Dual-Engine + IX Peering:** Port `6053` (DoH/DoT Anti-DPI + `0ms` RAM cache) & Port `6054` (Dedicated Gaming IX/IIX/OpenIXP peering + `max-reply-ip-num 1`).
-            - **Traffic Monitor (`LuCI -> Services -> Traffic Monitor`):** Real-time per-interface, status Port WAN (LAN), dan grafik tersimpan permanen.
+            - **Max Performance & Anti-Spike:** TCP BBR + `fq_codel` + `tcp_notsent_lowat`, NAPI budget, SMP 4-Thread CPU RPS/XPS, `irqbalance` + `packet_steering`, ZRAM Swap, WiFi 5G `VHT80` CCMP + WMM + Short-GI + AQL Low-Latency + 802.11k/v roaming.
+            - **SmartDNS Dual-Engine + IX Peering:** Port `6053` (DoH/DoT IP-SAN Valid + `0ms` RAM cache) & Port `6054` (Dedicated Gaming IX/IIX/OpenIXP peering + `max-reply-ip-num 1`).
+            - **Traffic Monitor (`LuCI -> Services -> Traffic Monitor`):** Real-time per-interface, status port LAN 1–4, dan grafik tersimpan permanen.
             - **Login LuCI & SSH:** `192.168.11.1` | Username: `root` | Password: `indonesiaraya`
-            - **Auto Deep Maintenance:** `/usr/bin/freeram.sh` aktif otomatis setiap pukul `03:00`.
-            - **Upgrade dari LuCI / BREED:** Gunakan `*-squashfs-sysupgrade.bin` (matikan centang *Keep settings* jika dari LuCI).
+            - **WiFi 2.4GHz:** `Openwrt` (Password: `internet`) | **WiFi 5GHz:** `Openwrt-5GHZ` (Password: `internetcepat`)
+            - **Interface & MWAN3:** `lan1`–`lan4` (`wan1`–`wan4`), `wanusb`, `wwan`, `wwan2` Load Balance + Gaming UDP Sticky | **Port fisik `wan` aktif sebagai LAN di `br-lan`**.
+            - **Auto Deep Maintenance:** `/usr/bin/freeram.sh` aktif otomatis setiap pukul `03:00` (bersih RAM, log, cache sampah, ARP basi & compact memory).
+            - **Upgrade dari LuCI:** Gunakan `*-squashfs-sysupgrade.bin` (matikan centang *Keep settings*).
           files: output/*
