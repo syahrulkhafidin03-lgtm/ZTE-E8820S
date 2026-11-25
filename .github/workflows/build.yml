@@ -50,9 +50,9 @@ jobs:
           path: |
             immortalwrt/dl
             immortalwrt/.ccache
-          key: immortalwrt-v25.12.2-isp-final-${{ hashFiles('.github/workflows/build.yml') }}
+          key: immortalwrt-v25.12.2-official-${{ hashFiles('.github/workflows/build.yml') }}
           restore-keys: |
-            immortalwrt-v25.12.2-isp-final-
+            immortalwrt-v25.12.2-official-
 
       - name: Update & Install Feeds
         working-directory: immortalwrt
@@ -60,7 +60,7 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      - name: Terapkan Patch BREED, Max Performance, SmartDNS & ISP MWAN3
+      - name: Terapkan Patch BREED, Tuning Performa, SmartDNS & MWAN3
         working-directory: immortalwrt
         run: |
           # 1. Timpa DTS dengan peta partisi BREED dari folder patch/
@@ -91,7 +91,7 @@ jobs:
             sed -i '/case "$board" in/r ../patch/upgrade.txt' "$UPGRADE_FILE"
           fi
 
-          # 4. Tanamkan Kernel Sysctl Tuning (BBR, fq_codel, Zero-Spike Latency & Device Health Guard)
+          # 4. Tanamkan Kernel Sysctl Tuning (TCP BBR, fq_codel, NAPI Budget, Zero-Spike Latency & RAM Guard)
           mkdir -p package/base-files/files/etc/sysctl.d
           cat <<'SYSCTL_EOF' > package/base-files/files/etc/sysctl.d/99-performance.conf
           # --- TCP BBR & Fair Queue CoDel (Ultra-Low Latency & Anti-Spike) ---
@@ -102,18 +102,18 @@ jobs:
           net.ipv4.tcp_slow_start_after_idle=0
           net.ipv4.tcp_no_metrics_save=1
           net.ipv4.tcp_notsent_lowat=16384
-          net.ipv4.tcp_ecn=1
           net.ipv4.tcp_tw_reuse=1
           net.ipv4.tcp_fin_timeout=15
           net.ipv4.tcp_keepalive_time=120
           net.ipv4.tcp_keepalive_intvl=15
           net.ipv4.tcp_keepalive_probes=4
 
-          # --- Buffer Jaringan & NAPI Polling Optimal untuk MT7621A (256MB RAM) ---
+          # --- High-Throughput NAPI Polling & SMP Packet Flow (Pipa Besar Anti-Macet) ---
           net.core.netdev_max_backlog=4096
           net.core.netdev_budget=600
           net.core.netdev_budget_usecs=8000
           net.core.somaxconn=2048
+          net.core.rps_sock_flow_entries=32768
           net.core.rmem_default=262144
           net.core.wmem_default=262144
           net.core.rmem_max=4194304
@@ -122,17 +122,12 @@ jobs:
           net.ipv4.tcp_wmem=4096 65536 4194304
           net.ipv4.udp_rmem_min=8192
           net.ipv4.udp_wmem_min=8192
-          net.ipv4.neigh.default.gc_thresh1=256
-          net.ipv4.neigh.default.gc_thresh2=1024
-          net.ipv4.neigh.default.gc_thresh3=2048
 
-          # --- Conntrack Multi-Client & Perlindungan Kesehatan RAM/CPU ---
+          # --- Conntrack Multi-WAN & Perlindungan Kesehatan Device Banyak Klien ---
           net.netfilter.nf_conntrack_max=32768
-          net.netfilter.nf_conntrack_tcp_timeout_established=600
-          net.netfilter.nf_conntrack_tcp_timeout_time_wait=10
-          net.netfilter.nf_conntrack_tcp_timeout_close_wait=10
-          net.netfilter.nf_conntrack_tcp_timeout_fin_wait=20
-          net.netfilter.nf_conntrack_udp_timeout=25
+          net.netfilter.nf_conntrack_tcp_timeout_established=1800
+          net.netfilter.nf_conntrack_tcp_timeout_time_wait=30
+          net.netfilter.nf_conntrack_udp_timeout=30
           net.netfilter.nf_conntrack_udp_timeout_stream=60
           vm.min_free_kbytes=16384
           vm.swappiness=10
@@ -141,112 +136,66 @@ jobs:
           vm.dirty_background_ratio=5
           SYSCTL_EOF
 
-          # 5. Tanamkan Wi-Fi Low-Latency AQL Tuning (Air-Time Fairness Anti-Bufferbloat Udara MT76)
-          mkdir -p package/base-files/files/etc/hotplug.d/ieee80211
-          cat <<'WIFI_AQL_EOF' > package/base-files/files/etc/hotplug.d/ieee80211/99-mt76-lowlatency
+          # 5. Tanamkan SMP 4-Thread CPU RPS/XPS Hotplug (Distribusi Beban LAN/WAN/WiFi ke 4 Thread MT7621A)
+          mkdir -p package/base-files/files/etc/hotplug.d/net
+          cat <<'SMP_EOF' > package/base-files/files/etc/hotplug.d/net/20-smp-tune
           #!/bin/sh
-          [ "$ACTION" = "add" ] || exit 0
-          for phy in /sys/kernel/debug/ieee80211/phy*; do
-              [ -w "$phy/aql_enable" ] && echo 1 > "$phy/aql_enable" 2>/dev/null
-              if [ -w "$phy/aql_txq_limit" ]; then
-                  echo "0 1500 3000" > "$phy/aql_txq_limit" 2>/dev/null
-                  echo "1 2000 4000" > "$phy/aql_txq_limit" 2>/dev/null
-                  echo "2 3000 6000" > "$phy/aql_txq_limit" 2>/dev/null
-                  echo "3 2000 4000" > "$phy/aql_txq_limit" 2>/dev/null
-              fi
+          [ "$ACTION" = "add" ] || [ "$ACTION" = "up" ] || exit 0
+          [ -n "$INTERFACE" ] || exit 0
+
+          SYS_DEV="/sys/class/net/$INTERFACE"
+          [ -d "$SYS_DEV/queues" ] || exit 0
+
+          for rxq in "$SYS_DEV"/queues/rx-*; do
+              [ -w "$rxq/rps_cpus" ] && echo "f" > "$rxq/rps_cpus" 2>/dev/null || true
+              [ -w "$rxq/rps_flow_cnt" ] && echo "4096" > "$rxq/rps_flow_cnt" 2>/dev/null || true
           done
-          WIFI_AQL_EOF
-          chmod 755 package/base-files/files/etc/hotplug.d/ieee80211/99-mt76-lowlatency
 
-          # 6. Tanamkan nftables ISP DSCP QoS (Prioritas EF untuk LAN 1 Gaming + AF41 Banking/Sosmed)
-          mkdir -p package/base-files/files/etc/nftables.d
-          cat <<'NFT_ISP_EOF' > package/base-files/files/etc/nftables.d/10-isp-traffic-shaping.nft
-          chain isp_dscp_qos {
-              type filter hook postrouting priority mangle; policy accept;
-              oifname "lan1" ip dscp set ef
-              oifname != "lan1" udp dport { 3478, 4244, 5222-5228, 5242 } ip dscp set af41
-              oifname != "lan1" tcp dport { 8443, 9443 } ip dscp set af41
-          }
-          NFT_ISP_EOF
-
-          # 7. Tanamkan Init Service ISP IPSet (START=10 sebelum MWAN3 & SmartDNS)
-          mkdir -p package/base-files/files/etc/init.d
-          cat <<'IPSET_INIT_EOF' > package/base-files/files/etc/init.d/mwan3-ipsets
-          #!/bin/sh /etc/rc.common
-
-          START=10
-          STOP=95
-
-          create_sets() {
-              command -v ipset >/dev/null 2>&1 || return 0
-              for s in gaming_ips bank_ips sosmed_ips streaming_ips download_ips; do
-                  ipset create "$s" hash:ip family inet timeout 86400 -exist 2>/dev/null || true
-              done
-          }
-
-          start() {
-              create_sets
-          }
-
-          restart() {
-              create_sets
-          }
-          IPSET_INIT_EOF
-          chmod 755 package/base-files/files/etc/init.d/mwan3-ipsets
-
-          # 8. Tanamkan Hotplug Sinkronisasi MWAN3 + SmartDNS saat WAN Reconnect
-          mkdir -p package/base-files/files/etc/hotplug.d/iface
-          cat <<'HOTPLUG_SYNC_EOF' > package/base-files/files/etc/hotplug.d/iface/95-mwan3-smartdns-sync
-          #!/bin/sh
-          [ "$ACTION" = "ifup" ] || exit 0
-          for s in gaming_ips bank_ips sosmed_ips streaming_ips download_ips; do
-              ipset create "$s" hash:ip family inet timeout 86400 -exist 2>/dev/null || true
+          for txq in "$SYS_DEV"/queues/tx-*; do
+              [ -w "$txq/xps_cpus" ] && echo "f" > "$txq/xps_cpus" 2>/dev/null || true
           done
-          if [ "$INTERFACE" = "wan1" ] && [ -x /etc/init.d/smartdns ]; then
-              /etc/init.d/smartdns reload >/dev/null 2>&1 || true
-          fi
-          HOTPLUG_SYNC_EOF
-          chmod 755 package/base-files/files/etc/hotplug.d/iface/95-mwan3-smartdns-sync
+          SMP_EOF
+          chmod +x package/base-files/files/etc/hotplug.d/net/20-smp-tune
 
-          # 9. Tanamkan /usr/bin/freeram.sh (Pembersih RAM, Defrag Memori, Log & Sampah Sistem Jam 03:00)
+          # 6. Tanamkan /usr/bin/freeram.sh (Deep Maintenance & Junk Cleaner otomatis pukul 03:00)
           mkdir -p package/base-files/files/usr/bin
           cat <<'FREERAM_EOF' > package/base-files/files/usr/bin/freeram.sh
           #!/bin/sh
-          # Script Pembersih Total Jam 03:00 (RAM, Defrag Memori, Log, Cache & Sampah Sistem)
+          # Script Pembersih Total RAM, Cache Sampah, Log & Tabel Basi (03:00 WIB)
 
-          MEM_BEFORE=$(awk '/MemAvailable:/ {print $2}' /proc/meminfo 2>/dev/null)
-          TMP_BEFORE=$(df -k /tmp 2>/dev/null | awk 'NR==2 {print $3}')
+          MEM_BEFORE=$(awk '/MemAvailable:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)
 
-          # 1. Sinkronisasi Filesystem, Defragmentasi & Bebaskan Cache RAM
+          # 1. Sinkronisasi & bersihkan cache halaman, dentry, inode
           sync
-          echo 1 > /proc/sys/vm/compact_memory 2>/dev/null || true
           echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
 
-          # 2. Bersihkan Log Tanpa Memutus File Descriptor Service Aktif
-          for logdir in /tmp/log /var/log; do
-              if [ -d "$logdir" ]; then
-                  find "$logdir" -type f \( -name "*.gz" -o -name "*.old" -o -name "*.1" -o -name "*.bak" \) -delete 2>/dev/null || true
-                  find "$logdir" -type f -exec truncate -s 0 {} + 2>/dev/null || true
-              fi
-          done
+          # 2. Hapus log, core dump & cache sementara LuCI/paket di RAM (/tmp)
+          rm -rf /tmp/log/* /tmp/*.log /tmp/core* /var/log/* \
+                 /tmp/luci-modulecache/* /tmp/luci-indexcache* \
+                 /tmp/opkg-lists/* /tmp/cache/* 2>/dev/null || true
+          dmesg -c >/dev/null 2>&1 || true
 
-          # 3. Bersihkan Sampah Cache Sementara LuCI, APK, Core Dump & File Temp
-          rm -rf /tmp/*.tmp /tmp/*.bak /tmp/*.core /tmp/opkg-* /tmp/luci-indexcache* /tmp/luci-modulecache/* /tmp/apk-cache/* /var/cache/apk/* 2>/dev/null || true
-          find /var/run/nettraffic /etc/nettraffic -type f -name "*.tmp" -delete 2>/dev/null || true
-
-          # 4. Bersihkan Cache Tabel ARP / Neighbor Usang
+          # 3. Bersihkan tetangga ARP basi & padatkan fragmentasi RAM
           ip -s -s neigh flush all >/dev/null 2>&1 || true
+          echo 1 > /proc/sys/vm/compact_memory 2>/dev/null || true
 
-          MEM_AFTER=$(awk '/MemAvailable:/ {print $2}' /proc/meminfo 2>/dev/null)
-          TMP_AFTER=$(df -k /tmp 2>/dev/null | awk 'NR==2 {print $3}')
-          logger -t auto-cleaner "Auto-Clean 03:00 selesai: RAM tersedia ${MEM_BEFORE}KB -> ${MEM_AFTER}KB | /tmp terpakai ${TMP_BEFORE}KB -> ${TMP_AFTER}KB."
+          # 4. Refresh ringan SmartDNS (SIGHUP) tanpa memutus koneksi internet
+          killall -HUP smartdns 2>/dev/null || true
+
+          MEM_AFTER=$(awk '/MemAvailable:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)
+          logger -t freeram "Deep Maintenance 03:00 selesai: Available RAM ${MEM_BEFORE}KB -> ${MEM_AFTER}KB"
           FREERAM_EOF
-          chmod 755 package/base-files/files/usr/bin/freeram.sh
+          chmod +x package/base-files/files/usr/bin/freeram.sh
 
-          # 10. Tanamkan skrip uci-defaults permanen (Fullcone NAT, Multi-Core, WiFi 2.4G/5G, SmartDNS IX, ISP MWAN3 & Cron)
+          # 7. Tanamkan skrip uci-defaults permanen (Root Password, Fullcone NAT, Multi-Core, WiFi 2.4G/5G, SmartDNS IX & MWAN3)
           mkdir -p package/base-files/files/etc/uci-defaults
           cat <<'OUTER_EOF' > package/base-files/files/etc/uci-defaults/999-custom-settings
           #!/bin/sh
+
+          # --- 0. PASSWORD ROOT (LUCI WEB UI & SSH: indonesiaraya) ---
+          if command -v passwd >/dev/null 2>&1; then
+              printf 'indonesiaraya\nindonesiaraya\n' | passwd root >/dev/null 2>&1 || true
+          fi
 
           # --- 1. MULTI-CORE CPU PACKET STEERING & IRQBALANCE ---
           uci set network.globals=globals
@@ -268,17 +217,8 @@ jobs:
           done
           uci set network.@device[0].bridge_empty='1'
 
-          # --- 3. NETWORK INTERFACES (WAN1=LAN1 GAMING ISOLATED, WAN2-4=LAN2-4, USB, WWAN, WWAN2) ---
-          # LAN 1 (wan1) diberi metric 90 pada tabel default OS agar trafik background tidak membocori port gaming
-          uci set network.wan1=interface
-          uci set network.wan1.device='lan1'
-          uci set network.wan1.proto='dhcp'
-          uci set network.wan1.metric='90'
-          uci set network.wan1.peerdns='0'
-          uci add_list network.wan1.dns='1.1.1.1'
-          uci add_list network.wan1.dns='8.8.8.8'
-
-          for i in 2 3 4; do
+          # --- 3. NETWORK INTERFACES (WAN1-WAN4, USB, WWAN) ---
+          for i in 1 2 3 4; do
               uci set network.wan$i=interface
               uci set network.wan$i.device="lan$i"
               uci set network.wan$i.proto='dhcp'
@@ -291,340 +231,99 @@ jobs:
           uci set network.wanusb=interface
           uci set network.wanusb.device='usb0'
           uci set network.wanusb.proto='dhcp'
-          uci set network.wanusb.metric='50'
-          uci set network.wanusb.peerdns='0'
+          uci set network.wanusb.metric='80'
 
           uci set network.wwan=interface
           uci set network.wwan.proto='dhcp'
           uci set network.wwan.metric='60'
-          uci set network.wwan.peerdns='0'
 
           uci set network.wwan2=interface
           uci set network.wwan2.proto='dhcp'
           uci set network.wwan2.metric='70'
-          uci set network.wwan2.peerdns='0'
 
           uci delete network.wan 2>/dev/null
           uci delete network.wan6 2>/dev/null
           uci commit network
 
-          # --- 4. FIREWALL ZONES, MTU CLAMPING & IMMORTALWRT NATIVE FULLCONE NAT ---
+          # --- 4. FIREWALL ZONES & IMMORTALWRT NATIVE FULLCONE NAT ---
           uci set firewall.@defaults[0].fullcone='1'
           uci set firewall.@defaults[0].flow_offloading='0'
           uci set firewall.@defaults[0].flow_offloading_hw='0'
 
-          uci set firewall.@zone[1].masq='1'
-          uci set firewall.@zone[1].mtu_fix='1'
           uci delete firewall.@zone[1].network 2>/dev/null
           for iface in wan wan1 wan2 wan3 wan4 wanusb wwan wwan2; do
               uci add_list firewall.@zone[1].network="$iface"
           done
           uci commit firewall
 
-          # --- 5. ISP / MIKROTIK-STYLE MWAN3 FULL TRAFFIC SEPARATION ---
-          /etc/init.d/mwan3-ipsets enable 2>/dev/null || true
-          /etc/init.d/mwan3-ipsets start 2>/dev/null || true
-
-          cat <<'MWAN3_EOF' > /etc/config/mwan3
+          # --- 5. MWAN3 CONFIGURATION (LOAD BALANCE) ---
+          cat <<EOF > /etc/config/mwan3
           config globals 'globals'
           	option mmx_mask '0x3F00'
 
-          config interface 'wan1'
+          $(for iface in wan1 wan2 wan3 wan4 wwan wwan2 wanusb; do
+          echo "config interface '$iface'
           	option enabled '1'
-          	list track_ip '1.1.1.1'
           	list track_ip '8.8.8.8'
+          	list track_ip '1.1.1.1'
           	list track_ip '9.9.9.9'
           	list track_ip '1.0.0.1'
           	option track_method 'ping'
           	option reliability '2'
-          	option count '1'
-          	option timeout '1'
-          	option interval '2'
-          	option down '2'
-          	option up '3'
-          	option check_operstate '1'
+          	option count '2'
+          	option timeout '2'
+          	option interval '5'
+          	option down '3'
+          	option up '5'
+          	option check_operstate '1'"
+          done)
 
-          config interface 'wan2'
-          	option enabled '1'
-          	list track_ip '1.1.1.1'
-          	list track_ip '8.8.8.8'
-          	list track_ip '9.9.9.9'
-          	list track_ip '1.0.0.1'
-          	option track_method 'ping'
-          	option reliability '2'
-          	option count '1'
-          	option timeout '1'
-          	option interval '2'
-          	option down '2'
-          	option up '3'
-          	option check_operstate '1'
-
-          config interface 'wan3'
-          	option enabled '1'
-          	list track_ip '1.1.1.1'
-          	list track_ip '8.8.8.8'
-          	list track_ip '9.9.9.9'
-          	list track_ip '1.0.0.1'
-          	option track_method 'ping'
-          	option reliability '2'
-          	option count '1'
-          	option timeout '1'
-          	option interval '2'
-          	option down '2'
-          	option up '3'
-          	option check_operstate '1'
-
-          config interface 'wan4'
-          	option enabled '1'
-          	list track_ip '1.1.1.1'
-          	list track_ip '8.8.8.8'
-          	list track_ip '9.9.9.9'
-          	list track_ip '1.0.0.1'
-          	option track_method 'ping'
-          	option reliability '2'
-          	option count '1'
-          	option timeout '1'
-          	option interval '2'
-          	option down '2'
-          	option up '3'
-          	option check_operstate '1'
-
-          config interface 'wanusb'
-          	option enabled '1'
-          	list track_ip '1.1.1.1'
-          	list track_ip '8.8.8.8'
-          	list track_ip '9.9.9.9'
-          	list track_ip '1.0.0.1'
-          	option track_method 'ping'
-          	option reliability '2'
-          	option count '1'
-          	option timeout '1'
-          	option interval '2'
-          	option down '2'
-          	option up '3'
-          	option check_operstate '1'
-
-          config interface 'wwan'
-          	option enabled '1'
-          	list track_ip '1.1.1.1'
-          	list track_ip '8.8.8.8'
-          	list track_ip '9.9.9.9'
-          	list track_ip '1.0.0.1'
-          	option track_method 'ping'
-          	option reliability '2'
-          	option count '1'
-          	option timeout '1'
-          	option interval '2'
-          	option down '2'
-          	option up '3'
-          	option check_operstate '1'
-
-          config interface 'wwan2'
-          	option enabled '1'
-          	list track_ip '1.1.1.1'
-          	list track_ip '8.8.8.8'
-          	list track_ip '9.9.9.9'
-          	list track_ip '1.0.0.1'
-          	option track_method 'ping'
-          	option reliability '2'
-          	option count '1'
-          	option timeout '1'
-          	option interval '2'
-          	option down '2'
-          	option up '3'
-          	option check_operstate '1'
-
-          # --- MEMBER 1: KHUSUS GAME MUTLAK DI PORT LAN 1 (wan1) ---
-          config member 'wan1_game_only'
-          	option interface 'wan1'
+          $(for name in wan1 wan2 wan3 wan4 wwan wwan2 wanusb; do
+          echo "config member '${name}_m1_w1'
+          	option interface '$name'
           	option metric '1'
-          	option weight '10'
+          	option weight '1'"
+          done)
 
-          # --- MEMBER 2: LOAD BALANCE GABUNG MERATA NON-GAME (LAN 2-4, USB, WWAN, WWAN2) ---
-          config member 'wan2_lb'
-          	option interface 'wan2'
-          	option metric '1'
-          	option weight '1'
-
-          config member 'wan3_lb'
-          	option interface 'wan3'
-          	option metric '1'
-          	option weight '1'
-
-          config member 'wan4_lb'
-          	option interface 'wan4'
-          	option metric '1'
-          	option weight '1'
-
-          config member 'wanusb_lb'
-          	option interface 'wanusb'
-          	option metric '1'
-          	option weight '1'
-
-          config member 'wwan_lb'
-          	option interface 'wwan'
-          	option metric '1'
-          	option weight '1'
-
-          config member 'wwan2_lb'
-          	option interface 'wwan2'
-          	option metric '1'
-          	option weight '1'
-
-          # --- POLICY A: GAMING LOCK KE LAN 1 (wan1) ---
-          config policy 'gaming_wan1_only'
-          	list use_member 'wan1_game_only'
-          	option last_resort 'default'
-
-          # --- POLICY B: NON-GAME LOAD BALANCE GABUNG SEMUA JALUR SELAIN LAN 1 ---
-          config policy 'lb_non_game'
-          	list use_member 'wan2_lb'
-          	list use_member 'wan3_lb'
-          	list use_member 'wan4_lb'
-          	list use_member 'wanusb_lb'
-          	list use_member 'wwan_lb'
-          	list use_member 'wwan2_lb'
+          config policy 'balanced'
+          $(for m in wan1 wan2 wan3 wan4 wwan wwan2 wanusb; do echo "	list use_member '${m}_m1_w1'"; done)
           	option last_resort 'unreachable'
 
-          # ==============================================================================
-          # RULE 1-4: SEMUA TRAFIK GAME & DNS GAMING IX PEERING KUNCI KE LAN 1 (wan1)
-          # ==============================================================================
-          config rule 'smartdns_gaming_ix_sync'
-          	option dest_ip '9.9.9.11,149.112.112.11,208.67.222.222,208.67.220.220'
-          	option use_policy 'gaming_wan1_only'
-
-          config rule 'gaming_domain_ipset'
-          	option ipset 'gaming_ips'
-          	option sticky '1'
-          	option timeout '1800'
-          	option use_policy 'gaming_wan1_only'
-
-          config rule 'gaming_udp_ports'
-          	option dest_port '3074,3478:3479,5000:5600,7000:9000,10000:20000,27000:27100,30000:30100,50000:50100'
-          	option proto 'udp'
-          	option sticky '1'
-          	option timeout '1800'
-          	option use_policy 'gaming_wan1_only'
-
-          config rule 'gaming_tcp_ports'
-          	option dest_port '3074,5000:5600,7000:9000,27015:27030,30000:30100'
-          	option proto 'tcp'
-          	option sticky '1'
-          	option timeout '1800'
-          	option use_policy 'gaming_wan1_only'
-
-          # ==============================================================================
-          # RULE 5: TRAFIK ALL BANKING & FINTECH (LONG STICKY + LB 6 PORT NON-GAME)
-          # ==============================================================================
-          config rule 'banking_ipset_sticky'
-          	option ipset 'bank_ips'
-          	option sticky '1'
-          	option timeout '1800'
-          	option use_policy 'lb_non_game'
-
-          config rule 'banking_secure_ports'
-          	option dest_port '8443,9443'
-          	option proto 'tcp'
-          	option sticky '1'
-          	option timeout '1800'
-          	option use_policy 'lb_non_game'
-
-          # ==============================================================================
-          # RULE 6: TRAFIK SOSMED (WA, IG, FB, TIKTOK, X, TELEGRAM) -> LB 6 PORT NON-GAME
-          # ==============================================================================
-          config rule 'sosmed_ipset_sticky'
-          	option ipset 'sosmed_ips'
-          	option sticky '1'
-          	option timeout '600'
-          	option use_policy 'lb_non_game'
-
-          config rule 'sosmed_call_ports'
-          	option dest_port '3478,4244,5222:5228,5242'
-          	option proto 'all'
-          	option sticky '1'
-          	option timeout '600'
-          	option use_policy 'lb_non_game'
-
-          # ==============================================================================
-          # RULE 7: TRAFIK STREAMING (YOUTUBE, NETFLIX, VIDIO, TWITCH) -> LB 6 PORT NON-GAME
-          # ==============================================================================
-          config rule 'streaming_ipset_lb'
-          	option ipset 'streaming_ips'
-          	option sticky '1'
-          	option timeout '300'
-          	option use_policy 'lb_non_game'
-
-          config rule 'streaming_media_ports'
-          	option dest_port '554,1935,8000:8090'
-          	option proto 'tcp'
-          	option sticky '1'
-          	option timeout '300'
-          	option use_policy 'lb_non_game'
-
-          # ==============================================================================
-          # RULE 8: DOWNLOAD, APK & SPEEDTEST (MULTI-PATH GABUNG BANDWIDTH 6 PORT NON-GAME)
-          # ==============================================================================
-          config rule 'download_speedtest_ipset'
-          	option ipset 'download_ips'
-          	option sticky '0'
-          	option use_policy 'lb_non_game'
-
-          config rule 'download_bulk_ports'
-          	option dest_port '20:21,8080,8880'
-          	option proto 'tcp'
-          	option sticky '0'
-          	option use_policy 'lb_non_game'
-
-          # ==============================================================================
-          # RULE 9: WEBSITE HTTP/HTTPS/QUIC & SEMUA APLIKASI -> LB 6 PORT NON-GAME
-          # ==============================================================================
-          config rule 'website_https_lb'
+          config rule 'https_sticky'
           	option dest_port '443'
           	option proto 'tcp'
           	option sticky '1'
-          	option timeout '300'
-          	option use_policy 'lb_non_game'
+          	option timeout '600'
+          	option use_policy 'balanced'
 
-          config rule 'website_quic_http3_lb'
-          	option dest_port '443'
-          	option proto 'udp'
-          	option sticky '1'
-          	option timeout '180'
-          	option use_policy 'lb_non_game'
-
-          config rule 'website_http_lb'
-          	option dest_port '80'
-          	option proto 'tcp'
-          	option sticky '1'
-          	option timeout '300'
-          	option use_policy 'lb_non_game'
-
-          config rule 'all_apps_default_lb'
+          config rule 'default_rule_v4'
           	option dest_ip '0.0.0.0/0'
-          	option use_policy 'lb_non_game'
-          MWAN3_EOF
+          	option use_policy 'balanced'
+          EOF
           uci commit mwan3
 
-          # --- 6. WIFI 2.4G (ImmortalWrt / internet) & 5G (ImmortalWrt-5GHZ / internetcepat) ---
-          [ -f /etc/config/wireless ] || wifi config
+          # --- 6. WIFI 2.4G & 5G HIGH-DENSITY PRO TUNING (VHT80, CCMP HARDWARE CRYPTO, 802.11k/v) ---
+          [ ! -f /etc/config/wireless ] && wifi config 2>/dev/null || true
+
           for r in 0 1; do
               uci -q get wireless.radio${r} >/dev/null || continue
               BAND=$(uci -q get wireless.radio${r}.band)
               uci set wireless.radio${r}.disabled='0'
               uci set wireless.radio${r}.country='ID'
               uci set wireless.radio${r}.channel='auto'
-              uci set wireless.radio${r}.legacy_rates='0'
               uci set wireless.radio${r}.beacon_int='100'
 
               uci set wireless.default_radio${r}=wifi-iface
               uci set wireless.default_radio${r}.device="radio${r}"
               uci set wireless.default_radio${r}.network='lan'
               uci set wireless.default_radio${r}.mode='ap'
-              uci set wireless.default_radio${r}.encryption='psk2+ccmp'
+              uci set wireless.default_radio${r}.encryption='psk2'
+              uci set wireless.default_radio${r}.cipher='ccmp'
               uci set wireless.default_radio${r}.disabled='0'
               uci set wireless.default_radio${r}.wmm='1'
-              uci set wireless.default_radio${r}.dtim_period='1'
-              uci set wireless.default_radio${r}.short_gi_20='1'
+              uci set wireless.default_radio${r}.uapsd='0'
+              uci set wireless.default_radio${r}.dtim_period='2'
+              uci set wireless.default_radio${r}.maxassoc='64'
               uci set wireless.default_radio${r}.disassoc_low_ack='1'
               uci set wireless.default_radio${r}.ieee80211k='1'
               uci set wireless.default_radio${r}.bss_transition='1'
@@ -634,18 +333,17 @@ jobs:
                   uci set wireless.radio${r}.txpower='20'
                   uci set wireless.default_radio${r}.ssid='ImmortalWrt-5GHZ'
                   uci set wireless.default_radio${r}.key='internetcepat'
-                  uci set wireless.default_radio${r}.short_gi_40='1'
-                  uci set wireless.default_radio${r}.short_gi_80='1'
               else
                   uci set wireless.radio${r}.htmode='HT20'
                   uci set wireless.radio${r}.txpower='18'
+                  uci set wireless.radio${r}.legacy_rates='0'
                   uci set wireless.default_radio${r}.ssid='ImmortalWrt'
                   uci set wireless.default_radio${r}.key='internet'
               fi
           done
           uci commit wireless
 
-          # --- 7. RAPIKAN FEED APK & SINKRONISASI SMARTDNS DUAL-ENGINE + IX PEERING + ISP MWAN3 ---
+          # --- 7. RAPIKAN FEED APK & KONFIGURASI SMARTDNS DUAL-ENGINE + IX GAMING PEERING ---
           sed -i 's|^\(.*mipsel_24kc/video/packages.adb\)|#\1|' /etc/apk/repositories.d/*.list 2>/dev/null || true
 
           if command -v smartdns >/dev/null 2>&1; then
@@ -665,191 +363,86 @@ jobs:
               uci set smartdns.@smartdns[0].rr_ttl_max='86400'
               uci set smartdns.@smartdns[0].force_aaaa_soa='1'
               uci set smartdns.@smartdns[0].speed_check_mode='ping,tcp:443,tcp:80'
-              uci set smartdns.@smartdns[0].response_mode='fastest-ip'
+              uci set smartdns.@smartdns[0].response_mode='first-ping'
               uci commit smartdns
 
               cat << 'CONF' > /etc/smartdns/custom.conf
-          # --- CACHE RAM 0MS & ANTI-AUS FLASH NAND ---
+          # --- CACHE RAM 0MS, ANTI-AUS FLASH NAND & SINGLE FASTEST IP ---
           cache-persist yes
           cache-file /tmp/smartdns.cache
           serve-expired-ttl 86400
           serve-expired-reply-ttl 3
           tcp-idle-time 120
-          max-reply-ip-num 2
-          dualstack-ip-selection no
+          max-reply-ip-num 1
+          force-aaaa-soa yes
 
-          # --- LISTENER PORT 6054: KHUSUS DEDICATED GAMING IX PEERING ---
+          # --- LISTENER PORT 6054: KHUSUS DEDICATED GAMING ---
           bind :6054 -group gaming
 
-          # ======================================================================
-          # ENGINE 1: DNS SUPER CEPAT & JEBOL SEMUA (DEFAULT PORT 6053 - NON-GAME)
-          # Menggunakan DoH/DoT IP langsung (Anti-DPI & Anti-Blokir ISP)
-          # ======================================================================
+          # ==========================================================
+          # ENGINE 1: DNS SUPER CEPAT & ANTI-BLOKIR (DEFAULT PORT 6053)
+          # Menggunakan DoH/DoT IP-SAN Valid + JKT-IX Anycast Peering
+          # ==========================================================
           server-https https://1.1.1.1/dns-query
           server-https https://1.0.0.1/dns-query
           server-https https://94.140.14.140/dns-query
           server-https https://94.140.14.141/dns-query
-          server-https https://9.9.9.9/dns-query
-          server-https https://8.8.8.8/dns-query
           server-tls 1.1.1.1:853
+          server-tls 1.0.0.1:853
+          server-tls 8.8.8.8:853
+          server-tls 8.8.4.4:853
+          server-tls 9.9.9.9:853
           server-tls 94.140.14.140:853
 
-          # ======================================================================
-          # ENGINE 2: DNS GAMING + IX PEERING JAKARTA / SINGAPORE (GROUP: gaming)
-          # Peering langsung ke server game terdekat (IIX / OpenIXP / SGIX)
-          # ======================================================================
-          server 9.9.9.11 -group gaming -exclude-default-group
-          server 149.112.112.11 -group gaming -exclude-default-group
-          server 208.67.222.222 -group gaming -exclude-default-group
-          server 208.67.220.220 -group gaming -exclude-default-group
+          # ==========================================================
+          # ENGINE 2: DNS GAMING IX / IIX / OPENIXP PEERING (GROUP: gaming)
+          # Tukar trafik langsung ke edge server Indonesia/SG terdekat
+          # ==========================================================
           server 1.1.1.1 -group gaming -exclude-default-group
           server 1.0.0.1 -group gaming -exclude-default-group
           server 8.8.8.8 -group gaming -exclude-default-group
           server 8.8.4.4 -group gaming -exclude-default-group
+          server 9.9.9.11 -group gaming -exclude-default-group
+          server 103.28.112.112 -group gaming -exclude-default-group
+          server 103.133.222.222 -group gaming -exclude-default-group
+          server-tls 1.1.1.1:853 -group gaming -exclude-default-group
+          server-tls 8.8.8.8:853 -group gaming -exclude-default-group
 
-          # --- SINKRONISASI NTP COLD-BOOT SYNC ---
-          nameserver /pool.ntp.org/gaming
-          nameserver /time.google.com/gaming
-          nameserver /time.cloudflare.com/gaming
-          nameserver /ntp.bmkg.go.id/gaming
-
-          # ======================================================================
-          # 1. DOMAIN GAMING -> ENGINE GAMING IX + IPSET gaming_ips (LAN 1 ONLY)
-          # ======================================================================
+          # --- AUTO-ROUTING DOMAIN GAME & VOICE KE ENGINE IX GAMING ---
           nameserver /mobilelegends.com/gaming
-          ipset /mobilelegends.com/gaming_ips
           nameserver /moonton.com/gaming
-          ipset /moonton.com/gaming_ips
           nameserver /youngjoygame.com/gaming
-          ipset /youngjoygame.com/gaming_ips
+          nameserver /bytedance.com/gaming
           nameserver /garena.com/gaming
-          ipset /garena.com/gaming_ips
           nameserver /garenanow.com/gaming
-          ipset /garenanow.com/gaming_ips
           nameserver /freefiremobile.com/gaming
-          ipset /freefiremobile.com/gaming_ips
           nameserver /tencent.com/gaming
-          ipset /tencent.com/gaming_ips
           nameserver /pubgmobile.com/gaming
-          ipset /pubgmobile.com/gaming_ips
           nameserver /proximabeta.com/gaming
-          ipset /proximabeta.com/gaming_ips
+          nameserver /igamecj.com/gaming
           nameserver /riotgames.com/gaming
-          ipset /riotgames.com/gaming_ips
           nameserver /valorant.com/gaming
-          ipset /valorant.com/gaming_ips
+          nameserver /pvp.net/gaming
           nameserver /steampowered.com/gaming
-          ipset /steampowered.com/gaming_ips
           nameserver /steamcommunity.com/gaming
-          ipset /steamcommunity.com/gaming_ips
           nameserver /steamcontent.com/gaming
-          ipset /steamcontent.com/gaming_ips
+          nameserver /valve.net/gaming
           nameserver /roblox.com/gaming
-          ipset /roblox.com/gaming_ips
           nameserver /rbxcdn.com/gaming
-          ipset /rbxcdn.com/gaming_ips
           nameserver /supercell.com/gaming
-          ipset /supercell.com/gaming_ips
+          nameserver /clashroyale.com/gaming
+          nameserver /brawlstars.com/gaming
           nameserver /epicgames.com/gaming
-          ipset /epicgames.com/gaming_ips
           nameserver /hoyoverse.com/gaming
-          ipset /hoyoverse.com/gaming_ips
           nameserver /mihoyo.com/gaming
-          ipset /mihoyo.com/gaming_ips
-          nameserver /activision.com/gaming
-          ipset /activision.com/gaming_ips
-          nameserver /callofduty.com/gaming
-          ipset /callofduty.com/gaming_ips
-          nameserver /blizzard.com/gaming
-          ipset /blizzard.com/gaming_ips
-          nameserver /ea.com/gaming
-          ipset /ea.com/gaming_ips
-          nameserver /konami.com/gaming
-          ipset /konami.com/gaming_ips
-          nameserver /minecraft.net/gaming
-          ipset /minecraft.net/gaming_ips
-          nameserver /mojang.com/gaming
-          ipset /mojang.com/gaming_ips
           nameserver /discord.gg/gaming
-          ipset /discord.gg/gaming_ips
-          nameserver /discord.media/gaming
-          ipset /discord.media/gaming_ips
-
-          # ======================================================================
-          # 2. DOMAIN BANKING & E-WALLET -> IPSET bank_ips (STICKY LB NON-GAME)
-          # ======================================================================
-          ipset /bca.co.id/bank_ips
-          ipset /klikbca.com/bank_ips
-          ipset /bri.co.id/bank_ips
-          ipset /bankmandiri.co.id/bank_ips
-          ipset /livin.bankmandiri.co.id/bank_ips
-          ipset /bni.co.id/bank_ips
-          ipset /bankbsi.co.id/bank_ips
-          ipset /cimbniaga.co.id/bank_ips
-          ipset /seabank.co.id/bank_ips
-          ipset /jago.com/bank_ips
-          ipset /dana.id/bank_ips
-          ipset /ovo.id/bank_ips
-          ipset /gopay.co.id/bank_ips
-          ipset /shopeepay.co.id/bank_ips
-          ipset /linkaja.id/bank_ips
-          ipset /flip.id/bank_ips
-          ipset /pajak.go.id/bank_ips
-
-          # ======================================================================
-          # 3. DOMAIN SOSMED & MESSAGING -> IPSET sosmed_ips (LB NON-GAME)
-          # ======================================================================
-          ipset /whatsapp.com/sosmed_ips
-          ipset /whatsapp.net/sosmed_ips
-          ipset /facebook.com/sosmed_ips
-          ipset /fbcdn.net/sosmed_ips
-          ipset /instagram.com/sosmed_ips
-          ipset /cdninstagram.com/sosmed_ips
-          ipset /meta.com/sosmed_ips
-          ipset /threads.net/sosmed_ips
-          ipset /tiktok.com/sosmed_ips
-          ipset /tiktokv.com/sosmed_ips
-          ipset /tiktokcdn.com/sosmed_ips
-          ipset /byteoversea.com/sosmed_ips
-          ipset /twitter.com/sosmed_ips
-          ipset /x.com/sosmed_ips
-          ipset /twimg.com/sosmed_ips
-          ipset /telegram.org/sosmed_ips
-          ipset /t.me/sosmed_ips
-
-          # ======================================================================
-          # 4. DOMAIN STREAMING VIDEO -> IPSET streaming_ips (LB NON-GAME)
-          # ======================================================================
-          ipset /youtube.com/streaming_ips
-          ipset /youtu.be/streaming_ips
-          ipset /googlevideo.com/streaming_ips
-          ipset /ytimg.com/streaming_ips
-          ipset /netflix.com/streaming_ips
-          ipset /nflxvideo.net/streaming_ips
-          ipset /vidio.com/streaming_ips
-          ipset /viu.com/streaming_ips
-          ipset /wetv.vip/streaming_ips
-          ipset /bilibili.tv/streaming_ips
-          ipset /twitch.tv/streaming_ips
-          ipset /spotify.com/streaming_ips
-          ipset /hotstar.com/streaming_ips
-
-          # ======================================================================
-          # 5. DOMAIN SPEEDTEST, APK & DOWNLOAD -> IPSET download_ips (AGGREGATE LB)
-          # ======================================================================
-          ipset /speedtest.net/download_ips
-          ipset /ooklaserver.net/download_ips
-          ipset /fast.com/download_ips
-          ipset /nperf.com/download_ips
-          ipset /gvt1.com/download_ips
-          ipset /gvt2.com/download_ips
-          ipset /apkpure.com/download_ips
-          ipset /mediafire.com/download_ips
-          ipset /mega.nz/download_ips
-          ipset /githubusercontent.com/download_ips
+          nameserver /discord.com/gaming
+          nameserver /discordapp.com/gaming
           CONF
 
               uci set dhcp.@dnsmasq[0].noresolv='1'
+              uci set dhcp.@dnsmasq[0].localuse='1'
+              uci set dhcp.@dnsmasq[0].rebind_protection='0'
               uci set dhcp.@dnsmasq[0].cachesize='0'
               uci set dhcp.@dnsmasq[0].dns_forward_max='300'
               uci -q delete dhcp.@dnsmasq[0].server || true
@@ -859,7 +452,7 @@ jobs:
               /etc/init.d/smartdns enable 2>/dev/null || true
           fi
 
-          # --- 8. AUTO FREERAM & CLEANER CRONTAB (SETIAP JAM 03:00) ---
+          # --- 8. AUTO DEEP MAINTENANCE & FREERAM CRONTAB (SETIAP JAM 03:00) ---
           mkdir -p /etc/crontabs
           touch /etc/crontabs/root
           sed -i '/freeram.sh/d' /etc/crontabs/root
@@ -1788,7 +1381,7 @@ jobs:
           		_label=""
           		_kind="other"
           		case "$_d" in
-          			lan1) _label="LAN 1 (GAMING)"; _kind="lan" ;;
+          			lan1) _label="LAN 1"; _kind="lan" ;;
           			lan2) _label="LAN 2"; _kind="lan" ;;
           			lan3) _label="LAN 3"; _kind="lan" ;;
           			lan4) _label="LAN 4"; _kind="lan" ;;
@@ -3268,12 +2861,12 @@ jobs:
           # CONFIG_PACKAGE_libustream-mbedtls is not set
           # CONFIG_PACKAGE_px5g-mbedtls is not set
 
-          # --- Multi-Core, ZRAM Health Guard, TCP BBR, IPSet & Fullcone NAT ---
+          # --- Multi-Core, ZRAM, TCP BBR, CAKE & Fullcone NAT Performance ---
           CONFIG_PACKAGE_irqbalance=y
           CONFIG_PACKAGE_zram-swap=y
           CONFIG_PACKAGE_kmod-tcp-bbr=y
+          CONFIG_PACKAGE_kmod-sched-cake=y
           CONFIG_PACKAGE_kmod-nft-fullcone=y
-          CONFIG_PACKAGE_ipset=y
 
           # --- SmartDNS & Sertifikat SSL ---
           CONFIG_PACKAGE_smartdns=y
@@ -3327,19 +2920,16 @@ jobs:
       - name: Upload ke GitHub Releases
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: immortalwrt-25.12.2-e8820s-isp-final-${{ github.run_number }}
-          name: ImmortalWrt 25.12.2 ZTE E8820S ISP Special MWAN3 (LAN1 Gaming Lock + 6-WAN LB) + SmartDNS IX (Build #${{ github.run_number }})
+          tag_name: immortalwrt-25.12.2-e8820s-${{ github.run_number }}
+          name: ImmortalWrt 25.12.2 ZTE E8820S Max Performance + SmartDNS IX + NetTraffic (Build #${{ github.run_number }})
           body: |
-            Custom build final **ImmortalWrt v25.12.2** (kompatibel 100% dengan seluruh paket & `kmods` online ImmortalWrt) untuk **ZTE E8820S (BREED Layout HC5962)**:
-            - **ISP-Grade Full Traffic Separation (`mwan3` + `SmartDNS` + `nftables`):**
-              - **Port LAN 1 (`wan1`):** Dikunci 100% eksklusif hanya untuk **Gaming** (`gaming_ips` + port game UDP/TCP) dengan prioritas `DSCP EF` tanpa gangguan trafik lain.
-              - **Load Balance 6 Jalur (`wan2` LAN2, `wan3` LAN3, `wan4` LAN4, `wanusb` USB, `wwan`, `wwan2`):** Pemisahan kategori ISP penuh untuk **All Banking** (`sticky 1800s`), **Sosmed & Call** (`WA/IG/FB/TikTok/X/Telegram`), **Streaming** (`YouTube/Netflix/Vidio/Twitch`), **Download/APK/Speedtest** (*multi-path* `sticky 0`), serta **Website & All Apps**.
-            - **SmartDNS Dual-Engine + IX Peering:** Port `6053` (DoH/DoT anti-blokir ISP) & Port `6054` (Dedicated Gaming IX Jakarta/Singapore peering `fastest-ip` + sinkronisasi otomatis `mwan3` `ipset`).
-            - **Max Performance & Device Health Guard:** Native Fullcone NAT, TCP BBR + `fq_codel` + `tcp_notsent_lowat`, `zram-swap`, `irqbalance` + `packet_steering` 4-thread CPU, NAPI polling tuning, & WiFi `DTIM=1` + `AQL` Air-Time Fairness + `802.11k/v`.
-            - **WiFi Dual-Band:**
-              - **2.4GHz:** SSID `ImmortalWrt` | Password `internet`
-              - **5GHz:** SSID `ImmortalWrt-5GHZ` | Password `internetcepat`
+            Custom build **ImmortalWrt v25.12.2** (kompatibel 100% dengan seluruh paket & `kmods` online ImmortalWrt) untuk **ZTE E8820S (BREED Layout HC5962)**:
+            - **Max Performance & High-Density:** Native Fullcone NAT, TCP BBR + `fq_codel` + NAPI Budget, SMP 4-Thread CPU RPS/XPS, ZRAM Swap, & WiFi 5G `VHT80` CCMP + 802.11k/v roaming.
+            - **SmartDNS Dual-Engine + IX Peering:** Port `6053` (DoH/DoT anti-blokir) & Port `6054` (Dedicated Gaming DNS IX/IIX/OpenIXP peering) + `max-reply-ip-num 1` + cache RAM 0ms.
             - **Traffic Monitor (`luci-app-nettraffic`):** Terpasang otomatis di menu **Services → Traffic Monitor**.
-            - **LAN IP:** `192.168.11.1` | **Auto-Cleaner 03:00:** `/usr/bin/freeram.sh` (bersihkan RAM, defrag memori, sampah cache, & log).
+            - **Login LuCI & SSH:** `192.168.11.1` | Username: `root` | Password: `indonesiaraya`
+            - **WiFi 2.4GHz:** `ImmortalWrt` (Password: `internet`) | **WiFi 5GHz:** `ImmortalWrt-5GHZ` (Password: `internetcepat`)
+            - **MWAN3:** Load Balance (`wan1`–`wan4`, `wanusb`, `wwan`, `wwan2`)
+            - **Auto Deep Maintenance:** `/usr/bin/freeram.sh` aktif otomatis setiap pukul `03:00` (bersih RAM, log, cache sampah, ARP basi & compact memory).
             - **Upgrade dari LuCI:** Gunakan `*-squashfs-sysupgrade.bin` (matikan centang *Keep settings*).
           files: output/*
