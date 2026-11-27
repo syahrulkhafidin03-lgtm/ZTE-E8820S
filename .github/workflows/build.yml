@@ -64,13 +64,10 @@ jobs:
         working-directory: immortalwrt
         run: |
           # 1. Timpa DTS dengan peta partisi BREED dari folder patch/
-          if [ -f ../patch/mt7621_zte_e8820s.dts ]; then
-            cp -f ../patch/mt7621_zte_e8820s.dts target/linux/ramips/dts/mt7621_zte_e8820s.dts
-          fi
+          cp -f ../patch/mt7621_zte_e8820s.dts target/linux/ramips/dts/mt7621_zte_e8820s.dts
 
           # 2. Ganti definisi zte_e8820s bawaan dengan versi BREED (patch/zte.txt)
-          if [ -f ../patch/zte.txt ]; then
-            python3 - <<'PY'
+          python3 - <<'PY'
           import re
           mk_path = "target/linux/ramips/image/mt7621.mk"
           with open(mk_path, "r", encoding="utf-8") as f:
@@ -81,7 +78,6 @@ jobs:
           with open(mk_path, "w", encoding="utf-8") as f:
               f.write(content.rstrip() + "\n\n" + zte_patch.strip() + "\n")
           PY
-          fi
 
           # 3. Terapkan patch LED & Sysupgrade secara aman
           LEDS_FILE="target/linux/ramips/mt7621/base-files/etc/board.d/01_leds"
@@ -98,7 +94,7 @@ jobs:
           # 4. Tanamkan Kernel Sysctl Max Performance (BBR, fq_codel, Zero-Spike Latency & RAM Guard)
           mkdir -p package/base-files/files/etc/sysctl.d
           cat <<'SYSCTL_EOF' > package/base-files/files/etc/sysctl.d/99-performance.conf
-          # --- TCP BBR & Fair Queue CoDel (Pipa Besar, Ultra-Low Latency & Anti-Spike) ---
+          # --- TCP BBR & Fair Queue CoDel (Ultra-Low Latency & Anti-Spike) ---
           net.core.default_qdisc=fq_codel
           net.ipv4.tcp_congestion_control=bbr
           net.ipv4.tcp_fastopen=3
@@ -107,14 +103,14 @@ jobs:
           net.ipv4.tcp_no_metrics_save=1
           net.ipv4.tcp_notsent_lowat=16384
           net.ipv4.tcp_autocorking=0
+          net.ipv4.tcp_low_latency=1
           net.ipv4.tcp_tw_reuse=1
           net.ipv4.tcp_fin_timeout=15
           net.ipv4.tcp_keepalive_time=120
           net.ipv4.tcp_keepalive_intvl=15
           net.ipv4.tcp_keepalive_probes=4
 
-          # --- Buffer, RPS Flow & NAPI Polling Optimal untuk MT7621A (256MB RAM, Multi-Client) ---
-          net.core.rps_sock_flow_entries=32768
+          # --- Buffer & NAPI Polling Optimal untuk MT7621A (256MB RAM, Multi-Client) ---
           net.core.netdev_max_backlog=4096
           net.core.netdev_budget=600
           net.core.netdev_budget_usecs=8000
@@ -128,11 +124,8 @@ jobs:
           net.ipv4.tcp_wmem=4096 65536 6291456
           net.ipv4.udp_rmem_min=8192
           net.ipv4.udp_wmem_min=8192
-          net.ipv4.neigh.default.gc_thresh1=256
-          net.ipv4.neigh.default.gc_thresh2=1024
-          net.ipv4.neigh.default.gc_thresh3=2048
 
-          # --- Conntrack Multi-WAN Agresif & Perlindungan Kesehatan RAM (256MB) ---
+          # --- Conntrack Multi-WAN Agresif & Perlindungan Kesehatan RAM ---
           net.netfilter.nf_conntrack_max=32768
           net.netfilter.nf_conntrack_tcp_timeout_established=1200
           net.netfilter.nf_conntrack_tcp_timeout_time_wait=15
@@ -142,54 +135,10 @@ jobs:
           net.netfilter.nf_conntrack_udp_timeout_stream=60
           vm.min_free_kbytes=16384
           vm.vfs_cache_pressure=150
-          vm.dirty_background_ratio=5
-          vm.dirty_ratio=10
           vm.swappiness=10
           SYSCTL_EOF
 
-          # 5A. Wi-Fi Ultra Low-Latency AQL & Airtime Fairness (Serasa WiFi 6/7/8 Tanpa Spike)
-          mkdir -p package/base-files/files/etc/hotplug.d/ieee80211
-          cat <<'WIFI_AQL_EOF' > package/base-files/files/etc/hotplug.d/ieee80211/99-mt76-lowlatency
-          #!/bin/sh
-          [ "$ACTION" = "add" ] || exit 0
-          for phy in /sys/kernel/debug/ieee80211/phy*; do
-              [ -w "$phy/aql_enable" ] && echo 1 > "$phy/aql_enable" 2>/dev/null || true
-              [ -w "$phy/airtime_flags" ] && echo 7 > "$phy/airtime_flags" 2>/dev/null || true
-              if [ -w "$phy/aql_txq_limit" ]; then
-                  echo "0 1000 2000" > "$phy/aql_txq_limit" 2>/dev/null || true
-                  echo "1 1500 3000" > "$phy/aql_txq_limit" 2>/dev/null || true
-                  echo "2 2500 5000" > "$phy/aql_txq_limit" 2>/dev/null || true
-                  echo "3 1500 3000" > "$phy/aql_txq_limit" 2>/dev/null || true
-              fi
-          done
-          WIFI_AQL_EOF
-          chmod 755 package/base-files/files/etc/hotplug.d/ieee80211/99-mt76-lowlatency
-
-          # 5B. Dynamic Hotplug 4-Thread SMP RPS/XPS untuk Semua Interface (LAN/WAN/USB/WWAN/WiFi)
-          mkdir -p package/base-files/files/etc/hotplug.d/net
-          cat <<'SMP_HP_EOF' > package/base-files/files/etc/hotplug.d/net/20-smp-rps-xps
-          #!/bin/sh
-          [ "$ACTION" = "add" ] || [ "$ACTION" = "register" ] || exit 0
-          [ -n "$INTERFACE" ] || exit 0
-          [ "$INTERFACE" = "lo" ] && exit 0
-
-          DEV_PATH="/sys/class/net/$INTERFACE"
-          [ -d "$DEV_PATH" ] || exit 0
-
-          ip link set dev "$INTERFACE" txqueuelen 2000 2>/dev/null || true
-
-          for rxq in "$DEV_PATH"/queues/rx-*; do
-              [ -w "$rxq/rps_cpus" ] && echo "f" > "$rxq/rps_cpus" 2>/dev/null || true
-              [ -w "$rxq/rps_flow_cnt" ] && echo "4096" > "$rxq/rps_flow_cnt" 2>/dev/null || true
-          done
-
-          for txq in "$DEV_PATH"/queues/tx-*; do
-              [ -w "$txq/xps_cpus" ] && echo "f" > "$txq/xps_cpus" 2>/dev/null || true
-          done
-          SMP_HP_EOF
-          chmod 755 package/base-files/files/etc/hotplug.d/net/20-smp-rps-xps
-
-          # 5C. Service Multi-Core Hardware IRQ Affinity & RPS/XPS saat Boot
+          # 5. Tanamkan Service Multi-Core IRQ & RPS/XPS Load Balancer (4-Thread MT7621A)
           mkdir -p package/base-files/files/etc/init.d
           cat <<'CPUTUNE_EOF' > package/base-files/files/etc/init.d/cpu-net-tuning
           #!/bin/sh /etc/rc.common
@@ -229,43 +178,20 @@ jobs:
           CPUTUNE_EOF
           chmod 755 package/base-files/files/etc/init.d/cpu-net-tuning
 
-          # 5D. Nftables DSCP EF Priority (WMM AC_VO Hardware Queue untuk UDP Gaming, DNS & ICMP)
-          mkdir -p package/base-files/files/etc/nftables.d
-          cat <<'NFT_QOS_EOF' > package/base-files/files/etc/nftables.d/99-gaming-qos.nft
-          chain mangle_postrouting_qos {
-              type filter hook postrouting priority mangle; policy accept;
-              udp dport { 53, 5000-5600, 7000-9010, 10000-20000, 27000-27100, 30000-30300 } ip dscp set ef counter
-              udp sport { 53, 5000-5600, 7000-9010, 10000-20000, 27000-27100, 30000-30300 } ip dscp set ef counter
-              ip protocol icmp ip dscp set cs6 counter
-          }
-          NFT_QOS_EOF
-          chmod 644 package/base-files/files/etc/nftables.d/99-gaming-qos.nft
-
-          # 5E. Auto-Sync SmartDNS Saat Status Interface MWAN3 Berubah (ifup/ifdown)
-          mkdir -p package/base-files/files/etc/hotplug.d/iface
-          cat <<'SMARTDNS_HP_EOF' > package/base-files/files/etc/hotplug.d/iface/95-smartdns-sync
-          #!/bin/sh
-          [ "$ACTION" = "ifup" ] || [ "$ACTION" = "ifdown" ] || exit 0
-          [ "$INTERFACE" = "loopback" ] && exit 0
-          /etc/init.d/smartdns reload >/dev/null 2>&1 || true
-          SMARTDNS_HP_EOF
-          chmod 755 package/base-files/files/etc/hotplug.d/iface/95-smartdns-sync
-
-          # 6. Tanamkan /usr/bin/freeram.sh (Deep Maintenance & Clear Sampah Otomatis Jam 03:00)
+          # 6. Tanamkan /usr/bin/freeram.sh (Pembersih RAM & Sampah Otomatis Jam 03:00)
           mkdir -p package/base-files/files/usr/bin
           cat <<'FREERAM_EOF' > package/base-files/files/usr/bin/freeram.sh
           #!/bin/sh
-          # Script Pembersih RAM, Cache, ARP, Conntrack & Sampah Sistem Otomatis (Jam 03:00)
+          # Script Pembersih RAM, Cache & Sampah Sistem Otomatis (Jam 03:00)
 
           MEM_BEFORE=$(awk '/MemAvailable:/ {printf "%.1f", $2/1024}' /proc/meminfo 2>/dev/null)
 
-          # 1. Flush filesystem buffer, bersihkan PageCache/Dentries/Inodes & defragmentasi memori
+          # 1. Flush filesystem buffer & bersihkan PageCache, Dentries, Inodes
           sync
           echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
-          [ -w /proc/sys/vm/compact_memory ] && echo 1 > /proc/sys/vm/compact_memory 2>/dev/null || true
 
-          # 2. Bersihkan seluruh file log sementara & arsip log (tanpa menghapus /var/run aktif)
-          rm -rf /tmp/log/* 2>/dev/null || true
+          # 2. Bersihkan seluruh file log sementara & arsip log
+          rm -rf /tmp/log/* /var/log/* 2>/dev/null || true
           find /tmp -maxdepth 2 -type f \( -name "*.log" -o -name "*.old" -o -name "*.gz" \) -delete 2>/dev/null || true
 
           # 3. Bersihkan cache paket apk/opkg & sisa file installer
@@ -274,22 +200,13 @@ jobs:
           # 4. Bersihkan cache sementara web LuCI agar tetap ringan & responsif
           rm -rf /tmp/luci-indexcache* /tmp/luci-modulecache/* /tmp/luci-upload* 2>/dev/null || true
 
-          # 5. Hapus file sementara .tmp yang mengendap > 60 menit (aman untuk bot Telegram & daemon aktif)
+          # 5. Hapus file sementara .tmp yang mengendap > 60 menit tanpa menyentuh service aktif
           find /tmp -maxdepth 1 -type f -name "*.tmp" -mmin +60 -delete 2>/dev/null || true
 
-          # 6. Bersihkan tabel ARP/Neighbor mati & koneksi NAT usang
-          ip -s -s neigh flush all >/dev/null 2>&1 || true
-          command -v conntrack >/dev/null 2>&1 && conntrack -F >/dev/null 2>&1 || true
-
-          # 7. Segarkan memori SmartDNS & Dnsmasq tanpa memutus koneksi internet
-          /etc/init.d/smartdns reload >/dev/null 2>&1 || true
-          /etc/init.d/dnsmasq reload >/dev/null 2>&1 || true
-
-          sync
           sleep 1
           MEM_AFTER=$(awk '/MemAvailable:/ {printf "%.1f", $2/1024}' /proc/meminfo 2>/dev/null)
 
-          logger -t freeram "Auto Maintenance 03:00 selesai: Sampah, Cache, ARP & Conntrack dibersihkan (RAM Tersedia: ${MEM_BEFORE}MB -> ${MEM_AFTER}MB)"
+          logger -t freeram "Auto Maintenance 03:00 selesai: Sampah & cache dibersihkan (RAM Tersedia: ${MEM_BEFORE}MB -> ${MEM_AFTER}MB)"
           FREERAM_EOF
           chmod 755 package/base-files/files/usr/bin/freeram.sh
 
@@ -298,7 +215,7 @@ jobs:
           cat <<'OUTER_EOF' > package/base-files/files/etc/uci-defaults/999-custom-settings
           #!/bin/sh
 
-          # --- 1. SET PASSWORD ROOT LUCI & SSH (root / indonesiaraya) ---
+          # --- 1. SET PASSWORD ROOT LUCI (root / indonesiaraya) ---
           printf 'indonesiaraya\nindonesiaraya\n' | passwd root >/dev/null 2>&1 || true
 
           # --- 2. MULTI-CORE CPU PACKET STEERING, IRQBALANCE & TUNING SERVICE ---
@@ -317,6 +234,7 @@ jobs:
           uci delete network.wan 2>/dev/null || true
           uci delete network.wan6 2>/dev/null || true
 
+          # Temukan device bridge br-lan secara akurat
           BR_DEV=""
           idx=0
           while uci -q get "network.@device[$idx]" >/dev/null; do
@@ -381,27 +299,25 @@ jobs:
           uci set firewall.@defaults[0].flow_offloading='0'
           uci set firewall.@defaults[0].flow_offloading_hw='0'
 
-          uci set firewall.@zone[1].masq='1'
-          uci set firewall.@zone[1].mtu_fix='1'
           uci delete firewall.@zone[1].network 2>/dev/null || true
           for iface in wan1 wan2 wan3 wan4 wanusb wwan wwan2; do
               uci add_list firewall.@zone[1].network="$iface"
           done
 
-          # Prioritaskan paket UDP kecil game (DSCP EF) agar antrean fq_codel & Wi-Fi WMM selalu mendahulukan game
+          # Prioritaskan paket UDP kecil game (DSCP EF) agar antrean fq_codel selalu mendahulukan game
           uci -q delete firewall.gaming_dscp || true
           uci set firewall.gaming_dscp=rule
           uci set firewall.gaming_dscp.name='Gaming-UDP-LowLatency-DSCP'
           uci set firewall.gaming_dscp.src='lan'
           uci set firewall.gaming_dscp.dest='wan'
           uci set firewall.gaming_dscp.proto='udp'
-          uci set firewall.gaming_dscp.dest_port='5000-5600 7000-9010 10000-20000 27000-27100 30000-30300'
+          uci set firewall.gaming_dscp.dest_port='5000-5221 7000-9010 10000-20000 30000-30300'
           uci set firewall.gaming_dscp.set_dscp='EF'
           uci set firewall.gaming_dscp.target='DSCP'
 
           uci commit firewall
 
-          # --- 5. MWAN3 CONFIGURATION (FAST FAILOVER 2-4 DETIK + STICKY GAMING SESSION) ---
+          # --- 5. MWAN3 CONFIGURATION (LOAD BALANCE + STICKY GAMING SESSION) ---
           cat <<'MWAN_EOF' > /etc/config/mwan3
           config globals 'globals'
           	option mmx_mask '0x3F00'
@@ -418,11 +334,11 @@ jobs:
           	list track_ip '9.9.9.9'
           	list track_ip '202.67.40.222'
           	option track_method 'ping'
-          	option reliability '2'
-          	option count '1'
-          	option timeout '1'
-          	option interval '2'
-          	option down '2'
+          	option reliability '1'
+          	option count '2'
+          	option timeout '2'
+          	option interval '5'
+          	option down '3'
           	option up '3'
           	option check_operstate '1'
 
@@ -447,7 +363,7 @@ jobs:
 
           config rule 'gaming_udp_sticky'
           	option proto 'udp'
-          	option dest_port '5000:5600,7000:9010,10000:20000,27000:27100,30000:30300'
+          	option dest_port '5000-5221,7000-9010,10000-20000,30000-30300'
           	option sticky '1'
           	option timeout '1800'
           	option use_policy 'balanced'
@@ -464,10 +380,9 @@ jobs:
           	option use_policy 'balanced'
           MWAN_POL_EOF
           uci commit mwan3
-          /etc/init.d/mwan3 enable 2>/dev/null || true
 
           # --- 6. WIFI 2.4GHZ & 5GHZ PRO TUNING (DETEKSI BAND AKURAT + ANTI-JITTER) ---
-          [ -s /etc/config/wireless ] || /sbin/wifi config >/dev/null 2>&1 || true
+          [ -s /etc/config/wireless ] || wifi config
 
           for r in 0 1; do
               uci -q get "wireless.radio${r}" >/dev/null || continue
@@ -479,12 +394,10 @@ jobs:
                       BAND="2g"
                   fi
               fi
-              [ -z "$BAND" ] && [ "$r" = "1" ] && BAND="5g"
 
               uci set "wireless.radio${r}.disabled=0"
               uci set "wireless.radio${r}.country=ID"
               uci set "wireless.radio${r}.channel=auto"
-              uci set "wireless.radio${r}.beacon_int=100"
 
               uci set "wireless.default_radio${r}=wifi-iface"
               uci set "wireless.default_radio${r}.device=radio${r}"
@@ -494,11 +407,7 @@ jobs:
               uci set "wireless.default_radio${r}.disabled=0"
               uci set "wireless.default_radio${r}.wmm=1"
               uci set "wireless.default_radio${r}.uapsd=0"
-              uci set "wireless.default_radio${r}.dtim_period=2"
-              uci set "wireless.default_radio${r}.short_gi_20=1"
-              uci set "wireless.default_radio${r}.short_gi_40=1"
               uci set "wireless.default_radio${r}.disassoc_low_ack=1"
-              uci set "wireless.default_radio${r}.max_inactivity=120"
               uci set "wireless.default_radio${r}.ieee80211k=1"
               uci set "wireless.default_radio${r}.bss_transition=1"
 
@@ -506,11 +415,6 @@ jobs:
                   uci set "wireless.radio${r}.band=5g"
                   uci set "wireless.radio${r}.htmode=VHT80"
                   uci set "wireless.radio${r}.txpower=20"
-                  uci set "wireless.radio${r}.short_gi_80=1"
-                  uci -q delete "wireless.radio${r}.channels" 2>/dev/null || true
-                  for ch in 36 40 44 48 149 153 157 161; do
-                      uci add_list "wireless.radio${r}.channels=$ch"
-                  done
                   uci set "wireless.default_radio${r}.ssid=ImmortalWrt-5GHZ"
                   uci set "wireless.default_radio${r}.key=internetcepat"
               else
@@ -518,10 +422,6 @@ jobs:
                   uci set "wireless.radio${r}.htmode=HT20"
                   uci set "wireless.radio${r}.txpower=18"
                   uci set "wireless.radio${r}.legacy_rates=0"
-                  uci -q delete "wireless.radio${r}.channels" 2>/dev/null || true
-                  for ch in 1 6 11; do
-                      uci add_list "wireless.radio${r}.channels=$ch"
-                  done
                   uci set "wireless.default_radio${r}.ssid=ImmortalWrt"
                   uci set "wireless.default_radio${r}.key=internet"
               fi
@@ -587,8 +487,6 @@ jobs:
           server 202.67.40.220 -group gaming -exclude-default-group
           server 103.133.222.222 -group gaming -exclude-default-group
           server 103.133.223.223 -group gaming -exclude-default-group
-          server 103.247.36.36 -group gaming -exclude-default-group
-          server 103.247.37.37 -group gaming -exclude-default-group
 
           # Anycast Node Jakarta (JKT-IX) & EDNS Client Subnet (ECS)
           server 1.1.1.1 -group gaming -exclude-default-group
@@ -599,13 +497,11 @@ jobs:
           server 149.112.112.11 -group gaming -exclude-default-group
           server 208.67.222.222 -group gaming -exclude-default-group
 
-          # --- AUTO-ROUTING NTP & DOMAIN GAME KE ENGINE IX GAMING ---
-          nameserver /pool.ntp.org/gaming
+          # --- AUTO-ROUTING DOMAIN GAME KE ENGINE IX GAMING ---
           nameserver /mobilelegends.com/gaming
           nameserver /moonton.com/gaming
           nameserver /youngjoygame.com/gaming
           nameserver /bytedance.com/gaming
-          nameserver /tiktokv.com/gaming
           nameserver /garena.com/gaming
           nameserver /garenanow.com/gaming
           nameserver /freefiremobile.com/gaming
@@ -3019,7 +2915,7 @@ jobs:
                     package/base-files/files/usr/share/rpcd/acl.d/luci-app-nettraffic.json \
                     package/base-files/files/www/luci-static/resources/view/nettraffic/overview.js
 
-      - name: Gunakan config.buildinfo Resmi ImmortalWrt 25.12.2 + Driver WiFi & Paket Tambahan
+      - name: Gunakan config.buildinfo Resmi ImmortalWrt 25.12.2 + Paket Tambahan
         working-directory: immortalwrt
         run: |
           curl -fsSL https://downloads.immortalwrt.org/releases/25.12.2/targets/ramips/mt7621/config.buildinfo -o .config
@@ -3032,11 +2928,6 @@ jobs:
           sed -i '/CONFIG_IB/d' .config
           sed -i '/CONFIG_SDK/d' .config
 
-          # Bersihkan status =m pada driver WiFi agar dipaksa masuk built-in (=y)
-          sed -i '/CONFIG_PACKAGE_kmod-mt7603/d' .config
-          sed -i '/CONFIG_PACKAGE_kmod-mt76x2/d' .config
-          sed -i '/CONFIG_PACKAGE_wpad-/d' .config
-
           cat <<'EOF' >> .config
           CONFIG_TARGET_ramips=y
           CONFIG_TARGET_ramips_mt7621=y
@@ -3047,16 +2938,6 @@ jobs:
           # CONFIG_IB is not set
           # CONFIG_SDK is not set
           CONFIG_CCACHE=y
-
-          # --- Driver WiFi 2.4GHz (MT7603) & 5GHz (MT7612) + WPA2/802.11k/v (OpenSSL) ---
-          CONFIG_PACKAGE_kmod-mt7603=y
-          CONFIG_PACKAGE_kmod-mt76x2=y
-          CONFIG_PACKAGE_wpad-openssl=y
-          # CONFIG_PACKAGE_wpad-basic-mbedtls is not set
-          # CONFIG_PACKAGE_wpad-mbedtls is not set
-          CONFIG_PACKAGE_iw=y
-          CONFIG_PACKAGE_iwinfo=y
-          CONFIG_PACKAGE_wireless-regdb=y
 
           # --- LuCI, Tema & SSL (Varian OpenSSL agar tidak bentrok apk) ---
           CONFIG_PACKAGE_luci=y
@@ -3079,7 +2960,6 @@ jobs:
           CONFIG_PACKAGE_smartdns=y
           CONFIG_PACKAGE_luci-app-smartdns=y
           CONFIG_PACKAGE_ca-bundle=y
-          CONFIG_PACKAGE_ca-certificates=y
 
           # --- MWAN3 Load Balancing ---
           CONFIG_PACKAGE_mwan3=y
@@ -3132,10 +3012,10 @@ jobs:
           name: ImmortalWrt 25.12.2 ZTE E8820S Final Max Performance (Build #${{ github.run_number }})
           body: |
             Custom build final **ImmortalWrt v25.12.2** untuk **ZTE E8820S (BREED Layout HC5962)**:
-            - **Max Performance & Zero-Spike Latency:** Native Fullcone NAT, TCP BBR + `fq_codel` + DSCP EF Gaming Priority, Wi-Fi AQL Low-Latency, `irqbalance` + 4-thread IRQ/RPS/XPS balancer.
-            - **SmartDNS IX Peering:** Port `6053` (DoH/DoT anti-blokir) & Port `6054` (`fastest-ip` peering IIX/OpenIXP/JKT-IX khusus gaming + auto-sync hotplug).
-            - **Topologi Port:** Port fisik **WAN (biru)** masuk ke `br-lan` (`192.168.11.1`) sebagai LAN, sedangkan `lan1`–`lan4` (`wan1`–`wan4`), `wanusb`, `wwan`, & `wwan2` aktif di **MWAN3** dengan fast-failover & sticky gaming session.
+            - **Max Performance & Zero-Spike Latency:** Native Fullcone NAT, TCP BBR + `fq_codel` + DSCP EF Gaming Priority, `irqbalance` + 4-thread IRQ/RPS/XPS balancer.
+            - **SmartDNS IX Peering:** Port `6053` (DoH/DoT anti-blokir) & Port `6054` (`fastest-ip` peering IIX/OpenIXP/JKT-IX khusus gaming).
+            - **Topologi Port:** Port fisik **WAN (biru)** masuk ke `br-lan` (`192.168.11.1`) sebagai LAN, sedangkan `lan1`–`lan4` (`wan1`–`wan4`), `wanusb`, `wwan`, & `wwan2` aktif di **MWAN3** dengan sticky gaming session.
             - **WiFi:** 2.4GHz `ImmortalWrt` (pass: `internet`) | 5GHz `ImmortalWrt-5GHZ` (pass: `internetcepat`).
-            - **Login LuCI:** `192.168.11.1` | User: `root` | Pass: `indonesiaraya`.
-            - **Auto Maintenance 03:00:** Pembersihan RAM, defragmentasi memori, log, cache, ARP & conntrack otomatis setiap pukul `03:00`.
+            - **Login LuCI:** `root` / `indonesiaraya`.
+            - **Auto Maintenance 03:00:** Pembersihan RAM, log, & cache otomatis setiap pukul `03:00`.
           files: output/*
